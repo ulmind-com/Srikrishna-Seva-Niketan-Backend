@@ -51,20 +51,25 @@ from app.core.security import (
     verify_password,
 )
 from app.dependencies.staff_auth import STAFF_SCOPE, get_current_staff
+from app.models.email_otp import EmailOtp
 from app.models.employee import Employee
 from app.models.enums import StaffVerificationStatus
 from app.models.location import Location
 from app.schemas.staff_portal import (
+    SendOtpRequest,
     StaffGoogleAuthRequest,
     StaffLoginRequest,
     StaffOnboardingRequest,
     StaffProfileResponse,
     StaffRegisterRequest,
+    VerifyOtpRequest,
 )
 from app.services.cloudinary_service import cloudinary_service
+from app.services.email_service import EmailService
 from app.utils.files import MAX_IMAGE_BYTES, read_validated_image
 
 router = APIRouter(prefix="/staff-portal", tags=["Staff Portal"])
+email_service = EmailService()
 
 _ALPHABET = string.ascii_uppercase + string.digits
 
@@ -144,6 +149,80 @@ async def list_branches() -> dict:
 # ---------------------------------------------------------------------------
 
 
+@router.post("/send-otp", summary="Send email verification code")
+@limiter.limit("5/minute")
+async def send_otp(
+    request: Request,
+    response: Response,
+    payload: SendOtpRequest,
+) -> dict:
+    """Generate and email a 6-digit verification code using Resend."""
+    email = payload.email.lower().strip()
+
+    # Check if a non-draft staff account already exists
+    existing = await Employee.find_one({"email": email})
+    if existing and existing.verification_status != StaffVerificationStatus.DRAFT:
+        raise ConflictException("An active staff account with this email already exists")
+
+    # Generate 6-digit OTP
+    otp = f"{secrets.randbelow(900000) + 100000:06d}"
+    expires_at = dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=10)
+
+    # Invalidate unverified prior OTPs for this email
+    await EmailOtp.find({"email": email, "is_verified": False}).delete()
+
+    record = EmailOtp(
+        email=email,
+        otp=otp,
+        purpose="staff_registration",
+        is_verified=False,
+        expires_at=expires_at,
+    )
+    await record.insert()
+
+    # Send email via Resend / SMTP
+    await email_service.send_staff_otp(to=email, otp=otp)
+
+    return success_response(
+        data={"email": email},
+        message="Verification code sent to your email address",
+    )
+
+
+@router.post("/verify-otp", summary="Verify email OTP code")
+@limiter.limit("10/minute")
+async def verify_otp(
+    request: Request,
+    response: Response,
+    payload: VerifyOtpRequest,
+) -> dict:
+    """Validate the 6-digit code."""
+    email = payload.email.lower().strip()
+    otp = payload.otp.strip()
+
+    record = await EmailOtp.find_one(
+        {
+            "email": email,
+            "otp": otp,
+            "is_verified": False,
+            "expires_at": {"$gt": dt.datetime.now(dt.timezone.utc)},
+        }
+    )
+
+    if not record:
+        raise BadRequestException("Invalid or expired verification code")
+
+    record.is_verified = True
+    record.verified_at = dt.datetime.now(dt.timezone.utc)
+    record.touch()
+    await record.save()
+
+    return success_response(
+        data={"email": email, "verified": True},
+        message="Email verified successfully",
+    )
+
+
 @router.post("/register", status_code=201, summary="Staff self-registration")
 @limiter.limit(settings.RATE_LIMIT_AUTH)
 async def register(
@@ -152,7 +231,37 @@ async def register(
     payload: StaffRegisterRequest,
 ) -> dict:
     """Create a staff account in ``DRAFT`` and sign them straight in."""
-    email = payload.email.lower()
+    email = payload.email.lower().strip()
+
+    # Verify that email OTP was verified
+    if settings.RESEND_API_KEY:
+        verified_record = await EmailOtp.find_one(
+            {
+                "email": email,
+                "is_verified": True,
+                "verified_at": {
+                    "$gt": dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=30)
+                },
+            }
+        )
+        if not verified_record:
+            if payload.otp:
+                otp_record = await EmailOtp.find_one(
+                    {
+                        "email": email,
+                        "otp": payload.otp.strip(),
+                        "expires_at": {"$gt": dt.datetime.now(dt.timezone.utc)},
+                    }
+                )
+                if not otp_record:
+                    raise BadRequestException("Invalid or expired verification code")
+                otp_record.is_verified = True
+                otp_record.verified_at = dt.datetime.now(dt.timezone.utc)
+                otp_record.touch()
+                await otp_record.save()
+            else:
+                raise BadRequestException("Please verify your email with the OTP code first")
+
     existing = await Employee.find_one({"email": email})
     if existing is not None:
         # If the account is still in DRAFT and the password matches, seamlessly resume

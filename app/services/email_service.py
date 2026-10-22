@@ -60,32 +60,98 @@ class EmailService:
             )
             return False
 
-        message = EmailMessage()
-        message["From"] = f"{settings.SMTP_FROM_NAME} <{settings.SMTP_FROM_EMAIL}>"
-        message["To"] = to
-        message["Subject"] = subject
-        message.set_content(text_fallback or "Please view this email in HTML.")
-        message.add_alternative(self._render(body_html), subtype="html")
+        rendered_html = self._render(body_html)
 
-        try:
-            await aiosmtplib.send(
-                message,
-                hostname=settings.SMTP_HOST,
-                port=settings.SMTP_PORT,
-                username=settings.SMTP_USER,
-                password=settings.SMTP_PASSWORD,
-                start_tls=settings.SMTP_TLS,
-                use_tls=settings.SMTP_SSL,
-                timeout=30,
-            )
-            logger.info("Email sent", extra={"to": to, "subject": subject})
-            return True
-        except Exception as exc:  # noqa: BLE001 - never break the request path
-            logger.error(
-                "Email send failed",
-                extra={"to": to, "subject": subject, "error": str(exc)},
-            )
-            return False
+        # 1. Primary: Send via Resend REST API if configured
+        if settings.RESEND_API_KEY:
+            try:
+                import httpx
+
+                async with httpx.AsyncClient(timeout=15.0) as client:
+                    resp = await client.post(
+                        "https://api.resend.com/emails",
+                        headers={
+                            "Authorization": f"Bearer {settings.RESEND_API_KEY}",
+                            "Content-Type": "application/json",
+                        },
+                        json={
+                            "from": f"{settings.SMTP_FROM_NAME} <{settings.RESEND_FROM_EMAIL}>",
+                            "to": [to],
+                            "subject": subject,
+                            "html": rendered_html,
+                            "text": text_fallback or "Please view this email in HTML.",
+                        },
+                    )
+                    if resp.status_code in {200, 201, 202}:
+                        logger.info(
+                            "Email sent via Resend API",
+                            extra={"to": to, "subject": subject, "resend_id": resp.json().get("id")},
+                        )
+                        return True
+                    else:
+                        logger.error(
+                            "Resend API returned error status",
+                            extra={"status": resp.status_code, "body": resp.text},
+                        )
+            except Exception as exc:
+                logger.error(
+                    "Resend API send failed",
+                    extra={"to": to, "subject": subject, "error": str(exc)},
+                )
+
+        # 2. Fallback to SMTP if configured
+        if settings.SMTP_HOST and settings.SMTP_USER:
+            message = EmailMessage()
+            message["From"] = f"{settings.SMTP_FROM_NAME} <{settings.SMTP_FROM_EMAIL or settings.RESEND_FROM_EMAIL}>"
+            message["To"] = to
+            message["Subject"] = subject
+            message.set_content(text_fallback or "Please view this email in HTML.")
+            message.add_alternative(rendered_html, subtype="html")
+
+            try:
+                await aiosmtplib.send(
+                    message,
+                    hostname=settings.SMTP_HOST,
+                    port=settings.SMTP_PORT,
+                    username=settings.SMTP_USER,
+                    password=settings.SMTP_PASSWORD,
+                    start_tls=settings.SMTP_TLS,
+                    use_tls=settings.SMTP_SSL,
+                    timeout=30,
+                )
+                logger.info("Email sent via SMTP", extra={"to": to, "subject": subject})
+                return True
+            except Exception as exc:  # noqa: BLE001 - never break the request path
+                logger.error(
+                    "Email send failed via SMTP",
+                    extra={"to": to, "subject": subject, "error": str(exc)},
+                )
+                return False
+
+        logger.info(
+            "Email skipped; no active provider configured",
+            extra={"to": to, "subject": subject},
+        )
+        return False
+
+    async def send_staff_otp(self, to: str, otp: str) -> bool:
+        """Send an email verification 6-digit OTP to registering staff."""
+        body = f"""
+        <div style="text-align: center; padding: 10px 0;">
+          <h3 style="color: #0f766e; margin-bottom: 8px;">Staff Verification Code</h3>
+          <p style="color: #4b5563; font-size: 14px; margin-bottom: 24px;">Use the verification code below to verify your email address and continue registration.</p>
+          <div style="display: inline-block; background: #f0fdfa; border: 2px dashed #0d9488; border-radius: 12px; padding: 16px 36px; margin: 0 auto;">
+            <span style="font-size: 34px; font-weight: bold; font-family: monospace; letter-spacing: 8px; color: #0f766e;">{otp}</span>
+          </div>
+          <p style="color: #9ca3af; font-size: 12px; margin-top: 20px;">This code is valid for 10 minutes. If you did not request this verification, you can safely ignore this email.</p>
+        </div>
+        """
+        return await self.send(
+            to=to,
+            subject=f"{otp} is your Staff Verification Code - Srikrishna Seva Niketan",
+            body_html=body,
+            text_fallback=f"Your staff verification code is {otp}. Valid for 10 minutes.",
+        )
 
     # ---- Convenience templated senders ----
 

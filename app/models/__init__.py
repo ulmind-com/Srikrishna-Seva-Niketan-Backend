@@ -16,6 +16,7 @@ from app.models.equipment import Equipment, EquipmentCategory, EquipmentRental
 from app.models.faq import FAQ
 from app.models.finance import Expense, Payment
 from app.models.elder_care import ElderCareRequest
+from app.models.email_otp import EmailOtp
 from app.models.infection_control import InfectionControlEnquiry, InfectionControlPageContent
 from app.models.location import Location
 from app.models.notification import Notification
@@ -65,6 +66,7 @@ ALL_DOCUMENT_MODELS = [
     Assignment,
     Expense,
     Payment,
+    EmailOtp,
 ]
 
 __all__ = [

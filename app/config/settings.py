@@ -52,13 +52,15 @@ class Settings(BaseSettings):
     CLOUDINARY_API_SECRET: str = ""
     CLOUDINARY_URL: str = ""
 
-    # ---- Email (SMTP) ----
+    # ---- Email (Resend & SMTP) ----
+    RESEND_API_KEY: str = ""
+    RESEND_FROM_EMAIL: str = "noreply@samiransamanta.in"
     SMTP_HOST: str = ""
     SMTP_PORT: int = 587
     SMTP_USER: str = ""
     SMTP_PASSWORD: str = ""
     SMTP_FROM_EMAIL: str = ""
-    SMTP_FROM_NAME: str = "Nupun Home Health Care Services"
+    SMTP_FROM_NAME: str = "Srikrishna Seva Niketan"
     SMTP_TLS: bool = True
     SMTP_SSL: bool = False
     ADMIN_NOTIFICATION_EMAIL: str = ""
@@ -107,7 +109,9 @@ class Settings(BaseSettings):
 
     @property
     def email_enabled(self) -> bool:
-        """Return ``True`` only when SMTP is fully configured."""
+        """Return ``True`` when Resend or SMTP is configured."""
+        if bool(self.RESEND_API_KEY):
+            return True
         return bool(self.SMTP_HOST and self.SMTP_USER and self.SMTP_PASSWORD)
 
     @property

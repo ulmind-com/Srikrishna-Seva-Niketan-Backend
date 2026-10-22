@@ -32,6 +32,19 @@ def _validate_password(v: str) -> str:
     return v
 
 
+class SendOtpRequest(BaseModel):
+    """Request a 6-digit email verification OTP."""
+
+    email: EmailStr
+
+
+class VerifyOtpRequest(BaseModel):
+    """Verify the received 6-digit email OTP."""
+
+    email: EmailStr
+    otp: str = Field(..., min_length=4, max_length=8)
+
+
 class StaffRegisterRequest(BaseModel):
     """Step 1 — create the staff account."""
 
@@ -39,6 +52,7 @@ class StaffRegisterRequest(BaseModel):
     email: EmailStr
     password: str = Field(..., min_length=8, max_length=128)
     location_id: str = Field(..., description="Branch the staff member belongs to")
+    otp: Optional[str] = Field(None, description="6-digit verification code")
 
     _check_password = field_validator("password")(_validate_password)
 
