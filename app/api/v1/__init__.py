@@ -24,6 +24,7 @@ from app.api.v1.search.router import router as search_router
 from app.api.v1.services.router import router as services_router
 from app.api.v1.settings.router import router as settings_router
 from app.api.v1.staff.router import router as staff_router
+from app.api.v1.staff_portal.router import router as staff_portal_router
 from app.api.v1.testimonials.router import router as testimonials_router
 from app.api.v1.uploads.router import router as uploads_router
 from app.api.v1.users.router import router as users_router
@@ -42,6 +43,7 @@ api_router.include_router(blogs_router)
 api_router.include_router(videos_router)
 api_router.include_router(testimonials_router)
 api_router.include_router(staff_router)
+api_router.include_router(staff_portal_router)
 api_router.include_router(faq_router)
 api_router.include_router(reviews_router)
 api_router.include_router(contact_router)

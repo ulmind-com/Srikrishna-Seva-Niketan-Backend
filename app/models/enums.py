@@ -114,6 +114,15 @@ class EmployeeStatus(StrEnum):
     INACTIVE = "inactive"
 
 
+class StaffVerificationStatus(StrEnum):
+    """Lifecycle of a self-registered staff member's onboarding."""
+
+    DRAFT = "draft"  # account created, onboarding profile not submitted yet
+    PENDING = "pending"  # submitted, awaiting super-admin review
+    VERIFIED = "verified"  # approved — ID card & application forms available
+    REJECTED = "rejected"
+
+
 class CareType(StrEnum):
     """Where a customer needs care delivered."""
 

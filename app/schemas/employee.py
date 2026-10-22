@@ -5,10 +5,10 @@ from __future__ import annotations
 import datetime as dt
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, EmailStr, Field
 
 from app.models.base import ImageAsset
-from app.models.enums import EmployeeStatus, Gender
+from app.models.enums import EmployeeStatus, Gender, StaffVerificationStatus
 from app.schemas.common import IdTimestampSchema
 
 
@@ -83,3 +83,15 @@ class EmployeeResponse(IdTimestampSchema):
     join_date: Optional[dt.date] = None
     notes: Optional[str] = None
     is_active: bool
+
+    # ---- Staff-portal fields (null for admin-created employees) ----
+    email: Optional[EmailStr] = None
+    dob: Optional[dt.date] = None
+    designation: Optional[str] = None
+    hrms_code: Optional[str] = None
+    work_history: Optional[str] = None
+    previous_employer: Optional[str] = None
+    verification_status: StaffVerificationStatus = StaffVerificationStatus.DRAFT
+    submitted_at: Optional[dt.datetime] = None
+    verified_at: Optional[dt.datetime] = None
+    rejection_reason: Optional[str] = None
