@@ -29,7 +29,7 @@ import secrets
 import string
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Request, Response, UploadFile
 
 from app.api.helpers import item_response
 from app.config import settings
@@ -139,10 +139,34 @@ async def list_branches() -> dict:
 
 @router.post("/register", status_code=201, summary="Staff self-registration")
 @limiter.limit(settings.RATE_LIMIT_AUTH)
-async def register(request: Request, payload: StaffRegisterRequest) -> dict:
+async def register(
+    request: Request,
+    response: Response,
+    payload: StaffRegisterRequest,
+) -> dict:
     """Create a staff account in ``DRAFT`` and sign them straight in."""
     email = payload.email.lower()
-    if await Employee.find_one({"email": email}) is not None:
+    existing = await Employee.find_one({"email": email})
+    if existing is not None:
+        # If the account is still in DRAFT and the password matches, seamlessly resume
+        # onboarding instead of dead-ending the user with a conflict error.
+        if (
+            existing.verification_status == StaffVerificationStatus.DRAFT
+            and existing.hashed_password
+            and verify_password(payload.password, existing.hashed_password)
+        ):
+            existing.last_login_at = dt.datetime.now(dt.timezone.utc)
+            if payload.location_id and existing.location_id != payload.location_id:
+                await _assert_branch_exists(payload.location_id)
+                existing.location_id = payload.location_id
+            if payload.name.strip():
+                existing.name = payload.name.strip()
+            existing.touch()
+            await existing.save()
+            return success_response(
+                data={**_issue_tokens(existing), "staff": _profile(existing)},
+                message="Account resumed — complete your profile next",
+            )
         raise ConflictException("An account with this email already exists")
 
     await _assert_branch_exists(payload.location_id)
@@ -167,7 +191,11 @@ async def register(request: Request, payload: StaffRegisterRequest) -> dict:
 
 @router.post("/login", summary="Staff login")
 @limiter.limit(settings.RATE_LIMIT_AUTH)
-async def login(request: Request, payload: StaffLoginRequest) -> dict:
+async def login(
+    request: Request,
+    response: Response,
+    payload: StaffLoginRequest,
+) -> dict:
     """Authenticate a staff member with email + password."""
     staff = await Employee.find_one({"email": payload.email.lower()})
     # Same generic message whether the email is unknown or the password is

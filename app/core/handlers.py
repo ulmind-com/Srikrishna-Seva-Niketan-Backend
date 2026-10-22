@@ -72,7 +72,12 @@ def register_exception_handlers(app: FastAPI) -> None:
         request: Request, exc: Exception
     ) -> JSONResponse:
         logger.exception("Unhandled server error", extra={"path": request.url.path})
-        return JSONResponse(
+        resp = JSONResponse(
             status_code=500,
             content=error_response(message="Internal server error"),
         )
+        origin = request.headers.get("origin")
+        if origin:
+            resp.headers["Access-Control-Allow-Origin"] = origin
+            resp.headers["Access-Control-Allow-Credentials"] = "true"
+        return resp

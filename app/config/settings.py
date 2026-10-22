@@ -84,9 +84,21 @@ class Settings(BaseSettings):
     def cors_origins(self) -> List[str]:
         """Return CORS origins parsed from the comma-separated string."""
         raw = self.CORS_ORIGINS.strip()
-        if not raw:
-            return ["*"]
-        return [origin.strip() for origin in raw.split(",") if origin.strip()]
+        defaults = [
+            "https://srikrishna-seva-niketan-admin.vercel.app",
+            "https://srikrishna-seva-niketan.vercel.app",
+            "http://localhost:3000",
+            "http://localhost:5173",
+            "http://localhost:8000",
+            "http://localhost:8080",
+        ]
+        if not raw or raw == "*":
+            return defaults
+        parsed = [origin.strip() for origin in raw.split(",") if origin.strip()]
+        for d in defaults:
+            if d not in parsed:
+                parsed.append(d)
+        return parsed
 
     @property
     def is_production(self) -> bool:
