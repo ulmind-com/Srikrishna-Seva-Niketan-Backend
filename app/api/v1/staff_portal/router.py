@@ -14,9 +14,15 @@ Flow
 Staff refresh tokens are stateless (decoded and re-issued, not persisted);
 revocation on the portal is a client-side token clear. Admin sessions, which
 need auditing and server-side revocation, keep using the admin auth service.
-"""
 
-from __future__ import annotations
+.. warning::
+   Do **not** add ``from __future__ import annotations`` to this module. The
+   rate-limited routes below are wrapped by slowapi's ``@limiter.limit``; with
+   PEP 563 string annotations FastAPI resolves the wrapper's annotations
+   outside this module's namespace, fails to recognise the Pydantic body
+   models and silently demotes them to query parameters — every POST then
+   rejects its body with ``query.payload: Field required``.
+"""
 
 import datetime as dt
 import secrets
