@@ -165,9 +165,10 @@ location's records while a super-admin sees everything.
 
 ## 🐳 Deployment
 
+- **Render (recommended):** step-by-step guide in **[DEPLOYMENT.md](DEPLOYMENT.md)**
+  — covers the `render.yaml` blueprint, every env var, the MongoDB Atlas
+  network-access gotcha, and CORS wiring. Deploy the backend **first**.
 - **Docker:** `docker compose up --build` (see `docker-compose.yml`).
-- **Render:** `render.yaml` defines the web service; set env vars in the Render
-  dashboard (never in the repo).
 - Production is served by Gunicorn + Uvicorn workers (see `Dockerfile`).
 
 ---

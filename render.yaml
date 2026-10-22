@@ -1,19 +1,26 @@
-# Render.com Blueprint for Nupun Home Health Care Services API.
+# Render.com Blueprint — Srikrishna Seva Niketan API
 # Docs: https://render.com/docs/blueprint-spec
+#
+# Deploy: Render dashboard → New → Blueprint → pick this repo.
+# Then set every `sync: false` var in the dashboard (see DEPLOYMENT.md).
 services:
   - type: web
-    name: nupun-health-api
+    name: srikrishna-seva-niketan-backend
     runtime: python
-    plan: starter
+    plan: starter            # 512 MB RAM — keep worker count low (see below)
     region: singapore
     branch: main
     buildCommand: pip install -r requirements.txt
+    # 2 Uvicorn workers fit comfortably in the 512 MB starter plan.
+    # Bump --workers only on a larger plan, or you risk OOM restarts.
     startCommand: >
       gunicorn app.main:app
       --worker-class uvicorn.workers.UvicornWorker
-      --workers 4
+      --workers 2
       --bind 0.0.0.0:$PORT
       --timeout 120
+      --access-logfile -
+      --error-logfile -
     healthCheckPath: /health
     autoDeploy: true
     envVars:
@@ -24,12 +31,14 @@ services:
       - key: DEBUG
         value: "false"
       - key: SECRET_KEY
-        generateValue: true
-      # The following secrets must be set in the Render dashboard:
-      - key: MONGODB_URL
-        sync: false
+        generateValue: true          # Render generates a strong value
       - key: MONGODB_DB_NAME
-        value: nupun_health
+        value: srikrishna_seva_niketan
+      - key: SMTP_PORT
+        value: "587"
+      # ---- Secrets / per-environment values — set these in the dashboard ----
+      - key: MONGODB_URL
+        sync: false                  # mongodb+srv://<user>:<ROTATED_pw>@<cluster>/...
       - key: CLOUDINARY_CLOUD_NAME
         sync: false
       - key: CLOUDINARY_API_KEY
@@ -38,8 +47,6 @@ services:
         sync: false
       - key: SMTP_HOST
         sync: false
-      - key: SMTP_PORT
-        value: "587"
       - key: SMTP_USER
         sync: false
       - key: SMTP_PASSWORD
@@ -49,9 +56,9 @@ services:
       - key: ADMIN_NOTIFICATION_EMAIL
         sync: false
       - key: CORS_ORIGINS
-        sync: false
+        sync: false                  # https://<admin>.vercel.app,https://<frontend>.vercel.app
       - key: FRONTEND_URL
-        sync: false
+        sync: false                  # https://<frontend>.vercel.app
       - key: FIRST_ADMIN_EMAIL
         sync: false
       - key: FIRST_ADMIN_PASSWORD
