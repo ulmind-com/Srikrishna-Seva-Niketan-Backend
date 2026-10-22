@@ -53,3 +53,6 @@ logs/
 secrets.json
 service-account*.json
 .claude/
+
+# Generated manager logins from seed_branches_managers.py — never commit.
+manager-credentials.txt
