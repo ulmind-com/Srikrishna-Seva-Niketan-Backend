@@ -43,12 +43,29 @@ class UserUpdate(BaseModel):
     """Payload for updating a user (all fields optional)."""
 
     name: Optional[str] = Field(None, min_length=2, max_length=120)
+    password: Optional[str] = Field(None, min_length=8)
     phone: Optional[str] = Field(None, max_length=20)
     role: Optional[str] = None
     extra_permissions: Optional[List[str]] = None
     location_ids: Optional[List[str]] = None
     is_active: Optional[bool] = None
     is_superuser: Optional[bool] = None
+
+    @field_validator("password")
+    @classmethod
+    def validate_password_optional(cls, v: Optional[str]) -> Optional[str]:
+        if not v:
+            return None
+        import re
+        if not re.search(r"[A-Z]", v):
+            raise ValueError("Password must contain at least one uppercase letter")
+        if not re.search(r"[a-z]", v):
+            raise ValueError("Password must contain at least one lowercase letter")
+        if not re.search(r"\d", v):
+            raise ValueError("Password must contain at least one number")
+        if not re.search(r"[\W_]", v):
+            raise ValueError("Password must contain at least one special character")
+        return v
 
 
 class UserResponse(IdTimestampSchema):

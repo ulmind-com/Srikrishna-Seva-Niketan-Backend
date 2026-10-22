@@ -17,6 +17,7 @@ from app.dependencies.auth import ActorContext, require_permission, require_supe
 from app.dependencies.scoping import ensure_can_access, resolve_create_location
 from app.models.employee import Employee
 from app.models.enums import StaffVerificationStatus
+from app.models.finance import Payment
 from app.models.location import Location
 from app.schemas.employee import EmployeeCreate, EmployeeResponse, EmployeeUpdate
 from app.schemas.staff_portal import (
@@ -215,6 +216,13 @@ async def staff_stats_by_location(
         async def _count(extra: dict) -> int:
             return await Employee.find({**base, **extra}).count()
 
+        working = await _count({"status": "assigned"})
+        available = await _count({"status": "available"})
+        payments = await Payment.find(
+            {"location_id": loc_id, "status": {"$ne": "pending"}}
+        ).to_list()
+        revenue = float(sum(p.amount for p in payments))
+
         stats.append(
             LocationStaffStat(
                 location_id=loc_id,
@@ -235,6 +243,9 @@ async def staff_stats_by_location(
                     {"verification_status": StaffVerificationStatus.DRAFT.value}
                 ),
                 active=await _count({"is_active": True}),
+                working=working,
+                available=available,
+                revenue=revenue,
             ).model_dump(mode="json")
         )
 

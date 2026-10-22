@@ -147,3 +147,6 @@ class LocationStaffStat(BaseModel):
     rejected: int = 0
     draft: int = 0
     active: int = 0
+    working: int = 0
+    available: int = 0
+    revenue: float = 0.0

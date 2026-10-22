@@ -106,6 +106,9 @@ async def update_user(
     if user is None:
         raise NotFoundException("User not found")
     data = payload.model_dump(exclude_unset=True)
+    if "password" in data and data["password"]:
+        user.hashed_password = hash_password(data.pop("password"))
+        await user.save()
     await _users.update(user, data)
     await activity_service.log(
         ActivityAction.UPDATE, "users",

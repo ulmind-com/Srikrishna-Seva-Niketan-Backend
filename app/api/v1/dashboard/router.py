@@ -22,9 +22,9 @@ router = APIRouter(prefix="/dashboard", tags=["Dashboard"])
 
 @router.get("/stats", summary="Dashboard stat cards")
 async def stats(
-    _: ActorContext = Depends(require_permission("dashboard", "view")),
+    actor: ActorContext = Depends(require_permission("dashboard", "view")),
 ) -> dict:
-    return success_response(data=await dashboard_service.stats(), message="Stats fetched")
+    return success_response(data=await dashboard_service.stats(actor), message="Stats fetched")
 
 
 @router.get("/charts", summary="Charts data (status breakdown + trend)")
