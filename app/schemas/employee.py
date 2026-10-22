@@ -95,3 +95,4 @@ class EmployeeResponse(IdTimestampSchema):
     submitted_at: Optional[dt.datetime] = None
     verified_at: Optional[dt.datetime] = None
     rejection_reason: Optional[str] = None
+    document_verification: Optional[dict] = None

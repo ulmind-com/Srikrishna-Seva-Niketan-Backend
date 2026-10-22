@@ -63,6 +63,9 @@ async def list_employees(
         filters["status"] = status
     if verification_status is not None:
         filters["verification_status"] = verification_status.value
+    else:
+        # Hide uncompleted / draft registrations from the staff register.
+        filters["verification_status"] = {"$ne": StaffVerificationStatus.DRAFT.value}
     if location_id is not None and actor.can_access_location(location_id):
         filters["location_id"] = location_id
     if is_active is not None:
@@ -93,6 +96,7 @@ async def create_employee(
     data = payload.model_dump(exclude_unset=True)
     data["location_id"] = resolve_create_location(actor, data.get("location_id"))
     data["code"] = await _unique_code()
+    data.setdefault("verification_status", StaffVerificationStatus.VERIFIED.value)
     doc = await _employees.create(data, actor)
     return item_response(EmployeeResponse, doc, "Employee registered")
 

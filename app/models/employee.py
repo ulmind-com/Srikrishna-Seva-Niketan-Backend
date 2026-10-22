@@ -82,6 +82,7 @@ class Employee(TimestampedDocument):
     verified_at: Optional[dt.datetime] = None
     verified_by: Optional[str] = None  # admin user id
     rejection_reason: Optional[str] = None
+    document_verification: Optional[dict] = None
 
     class Settings:
         name = "employees"

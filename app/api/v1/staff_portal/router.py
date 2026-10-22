@@ -69,7 +69,14 @@ router = APIRouter(prefix="/staff-portal", tags=["Staff Portal"])
 _ALPHABET = string.ascii_uppercase + string.digits
 
 #: Fields that must be filled before a profile can be submitted for review.
-REQUIRED_FOR_SUBMIT = ("phone", "address", "experience", "work_history")
+REQUIRED_FOR_SUBMIT = (
+    "phone",
+    "address",
+    "experience",
+    "work_history",
+    "id_proof_type",
+    "id_proof_number",
+)
 
 
 async def _unique_code() -> str:
@@ -339,6 +346,8 @@ async def submit_me(staff: Employee = Depends(get_current_staff)) -> dict:
         missing.append("photo")
     if not staff.signature:
         missing.append("signature")
+    if not staff.id_proof:
+        missing.append("government ID document")
     if missing:
         raise BadRequestException(
             "Please complete these first: " + ", ".join(m.replace("_", " ") for m in missing)

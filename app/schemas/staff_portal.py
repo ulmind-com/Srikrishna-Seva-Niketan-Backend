@@ -83,6 +83,7 @@ class StaffOnboardingRequest(BaseModel):
     id_proof: Optional[ImageAsset] = None
     id_proof_type: Optional[str] = Field(None, max_length=40)
     id_proof_number: Optional[str] = Field(None, max_length=40)
+    document_verification: Optional[dict] = None
 
 
 class StaffVerifyRequest(BaseModel):
@@ -131,6 +132,7 @@ class StaffProfileResponse(IdTimestampSchema):
     verified_at: Optional[dt.datetime] = None
     rejection_reason: Optional[str] = None
     join_date: Optional[dt.date] = None
+    document_verification: Optional[dict] = None
     is_active: bool
 
 
