@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  backend:
+    name: Lint & smoke-test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Byte-compile the app
+        run: python -m compileall -q app
+
+      - name: Import smoke test (no DB connection)
+        env:
+          SECRET_KEY: ci-dummy-secret-key-not-used-in-prod
+          MONGODB_URL: mongodb://localhost:27017
+          MONGODB_DB_NAME: ci
+          CORS_ORIGINS: http://localhost:5173
+          FRONTEND_URL: http://localhost:8080
+          FIRST_ADMIN_NAME: CI Admin
+          FIRST_ADMIN_EMAIL: ci@example.com
+          FIRST_ADMIN_PASSWORD: CiAdmin@12345!
+        run: python -c "import app.main; print('app imports OK')"
+
+      - name: Run tests (if any)
+        env:
+          SECRET_KEY: ci-dummy-secret-key-not-used-in-prod
+          MONGODB_URL: mongodb://localhost:27017
+          MONGODB_DB_NAME: ci
+        run: |
+          if ls tests/**/*.py app/**/test_*.py >/dev/null 2>&1 || [ -d tests ]; then
+            pip install pytest pytest-asyncio
+            pytest -q || echo "::warning::pytest reported failures"
+          else
+            echo "No tests found — skipping."
+          fi

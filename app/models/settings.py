@@ -1,0 +1,306 @@
+"""Singleton-style website configuration documents.
+
+Each of these collections is expected to hold a single document (the active
+configuration). The service layer enforces the singleton semantics.
+"""
+
+from __future__ import annotations
+
+from typing import List, Optional, Union
+
+from pydantic import BaseModel, EmailStr, Field
+
+from app.models.base import ImageAsset, TimestampedDocument
+
+class WorkingHour(BaseModel):
+    """Opening hours for a single day of the week."""
+
+    day: str
+    open_time: Optional[str] = None
+    close_time: Optional[str] = None
+    is_closed: bool = False
+
+class HeroStat(BaseModel):
+    """A single stat displayed in the services hero band (e.g. ``24/7`` → ``Patient Support``)."""
+
+    value: str
+    label: str
+
+class HeroSlide(BaseModel):
+    """A single slide for the services hero carousel."""
+
+    title: Optional[str] = None
+    subtitle: Optional[str] = None
+    button_text: Optional[str] = None
+    button_link: Optional[str] = None
+    image_desktop: Optional[ImageAsset] = None
+    image_mobile: Optional[ImageAsset] = None
+    order: int = 0
+
+class ServicesHero(BaseModel):
+    """Editable content for the Services page hero section."""
+
+    title: Optional[str] = None
+    subtitle: Optional[str] = None
+    background_image: Optional[ImageAsset] = None
+    stats: List[HeroStat] = Field(default_factory=list)
+    slides: List[HeroSlide] = Field(default_factory=list)
+
+class HomeHeroStat(BaseModel):
+    """A single stat displayed in the home hero section (e.g. 100 + Verified Caregivers)."""
+
+    value: int = 0
+    suffix: str = ""
+    label: str = ""
+
+class HomeHero(BaseModel):
+    """Editable content for the Home page hero section."""
+
+    trust_badge_text: Optional[str] = "Trusted by 5,000+"
+    trust_badge_quote: Optional[str] = '"Their nursing staff is extremely professional and compassionate. Highly recommended!"'
+    trust_badge_avatars: List[ImageAsset] = Field(default_factory=list)
+    slider_images: List[ImageAsset] = Field(default_factory=list)
+    slider_images_mobile: List[ImageAsset] = Field(default_factory=list)
+    stats: List[HomeHeroStat] = Field(default_factory=list)
+
+class ValueItem(BaseModel):
+    """A title/body pair used for about-page values and similar sections."""
+    title: Optional[str] = ""
+    body: Optional[str] = ""
+
+class TeamTile(BaseModel):
+    """A single tile in the professionals / team section."""
+    image: Optional[str] = None
+    count: str = ""
+    title: str = ""
+    desc: str = ""
+
+class CareTeamSlide(BaseModel):
+    """A single slide in the care-team stacked-card carousel."""
+    image: Optional[str] = None
+    eyebrow: str = ""
+    title: str = ""
+    description: str = ""
+    button_text: str = ""
+    button_link: str = "/booking"
+    stats: List[HeroStat] = Field(default_factory=list)
+
+class WhyChooseItem(BaseModel):
+    """A single card in the 'Why Choose Nupun' section."""
+    title: str = ""
+    detail: str = ""
+
+class CommitmentItem(BaseModel):
+    """A single item in the 'Our Commitment to Excellence' grid."""
+    icon: str = "default"
+    text: str = ""
+
+class FounderCard(BaseModel):
+    """A founder/co-founder card on the About page."""
+    name: str = ""
+    role: str = ""
+    image: Optional[ImageAsset] = None
+    description: str = ""
+    address: Optional[str] = None
+
+class HomeAboutFeature(BaseModel):
+    """A single feature item in the Home About section (e.g. ICU at Home)."""
+    title: Optional[str] = None
+    description: Optional[str] = None
+    icon: Optional[str] = "heart-pulse"  # fallback icon key
+    icon_image: Optional[Union[str, ImageAsset]] = None  # uploaded PNG/image URL (overrides icon key)
+
+class HomeAboutTile(BaseModel):
+    """A single image card in the Home About section (e.g. 120+ Registered Nurses)."""
+    image: Optional[Union[str, ImageAsset]] = None
+    count: Optional[str] = None
+    title: Optional[str] = None
+    description: Optional[str] = None
+    cta_label: Optional[str] = None
+    cta_link: Optional[str] = "/booking"
+
+class ComprehensiveServiceCard(BaseModel):
+    """A single card in the 'Our Comprehensive Services' homepage section."""
+    id: Optional[str] = None
+    title: str = ""
+    image: Optional[Union[str, ImageAsset]] = None
+    features: List[str] = Field(default_factory=list)
+    button_text: str = ""
+    button_link: Optional[str] = None
+    select_label: str = ""
+    form_options: List[str] = Field(default_factory=list)
+    order: int = 0
+
+class BookingFormField(BaseModel):
+    """A single field in a booking form step."""
+    name: str = ""            # field key (e.g. "patient_name")
+    label: str = ""           # display label
+    type: str = "text"        # text, textarea, select, radio, date, time, number
+    placeholder: Optional[str] = None
+    required: bool = False
+    options: List[str] = Field(default_factory=list)  # for select/radio fields
+    col_span: int = 1         # 1 = half width, 2 = full width
+    order: int = 0
+
+class BookingFormStep(BaseModel):
+    """A single step in the multi-step booking form."""
+    key: str = ""             # unique step key
+    label: str = ""           # step label (shown in progress header)
+    eyebrow: Optional[str] = None
+    title: Optional[str] = None
+    description: Optional[str] = None
+    fields: List[BookingFormField] = Field(default_factory=list)
+    order: int = 0
+
+class BookingFormConfig(BaseModel):
+    """Complete booking form configuration."""
+    steps: List[BookingFormStep] = Field(default_factory=list)
+    cities: List[str] = Field(default_factory=list)
+    service_care_hints: dict = Field(default_factory=dict)  # service_name -> hint text
+
+class LegalSection(BaseModel):
+    """A single section of a legal page (privacy, terms, refund)."""
+    title: Optional[str] = ""
+    body: Optional[str] = ""
+
+class WebsiteSettings(TimestampedDocument):
+    """Global website / brand settings."""
+
+    website_name: str = "Nupun Home Health Care Services"
+    tagline: Optional[str] = None
+    logo: Optional[ImageAsset] = None
+    favicon: Optional[ImageAsset] = None
+
+    theme_primary: Optional[str] = None
+    theme_accent: Optional[str] = None
+    font_family: Optional[str] = None
+
+    email: Optional[EmailStr] = None
+    phone: Optional[str] = None
+    whatsapp: Optional[str] = None
+    address: Optional[str] = None
+    google_map_embed: Optional[str] = None
+    google_reviews_link: Optional[str] = None
+
+    working_hours: List[WorkingHour] = Field(default_factory=list)
+
+    services_hero: Optional[ServicesHero] = None
+    home_hero: Optional[HomeHero] = None
+
+    # ── Home page hero ──────────────────────────────────────
+    hero_headline: Optional[str] = None
+    hero_subtitle: Optional[str] = None
+    hero_description: Optional[str] = None
+    hero_cta_primary_text: Optional[str] = None
+    hero_cta_secondary_text: Optional[str] = None
+    hero_image: Optional[ImageAsset] = None
+    hero_stats: List[HeroStat] = Field(default_factory=list)
+
+    # ── About page ──────────────────────────────────────────
+    about_hero_badge: Optional[str] = None
+    about_hero_title: Optional[str] = None
+    about_hero_description: Optional[str] = None
+    about_hero_image: Optional[ImageAsset] = None
+    about_hero_stats: List[HeroStat] = Field(default_factory=list)
+    about_story_title: Optional[str] = None
+    about_story_text: Optional[str] = None
+    about_stats: List[HeroStat] = Field(default_factory=list)
+    about_values: List[ValueItem] = Field(default_factory=list)
+    about_commitments: List[str] = Field(default_factory=list)
+    commitment_items: List[CommitmentItem] = Field(default_factory=list)
+    commitment_image: Optional[ImageAsset] = None
+
+    # About page founders
+    about_founders: List[FounderCard] = Field(default_factory=list)
+
+    # About page address
+    about_address_name: Optional[str] = None
+    about_address_line1: Optional[str] = None
+    about_address_line2: Optional[str] = None
+    about_map_embed_url: Optional[str] = None
+
+    # Why Choose section header
+    why_choose_eyebrow: Optional[str] = None
+    why_choose_title: Optional[str] = None
+    why_choose_description: Optional[str] = None
+    commitment_subtitle: Optional[str] = None
+    commitment_badge_value: Optional[str] = None
+    commitment_badge_label: Optional[str] = None
+
+    about_welcome_title: Optional[str] = None
+    about_welcome_description: Optional[str] = None
+    about_welcome_image: Optional[ImageAsset] = None
+
+    # ── Home About section ───────────────────────────────────
+    home_about_heading: Optional[str] = None
+    home_about_description: Optional[str] = None
+    home_about_features: List[HomeAboutFeature] = Field(default_factory=list)
+    home_about_tiles: List[HomeAboutTile] = Field(default_factory=list)
+
+    videos_wall_image: Optional[ImageAsset] = None
+
+    # ── Reusable content sections ───────────────────────────
+    how_it_works_steps: List[ValueItem] = Field(default_factory=list)
+    team_tiles: List[TeamTile] = Field(default_factory=list)
+    care_team_slides: List[CareTeamSlide] = Field(default_factory=list)
+    trust_bar_items: List[str] = Field(default_factory=list)
+    why_choose_items: List[WhyChooseItem] = Field(default_factory=list)
+    conditions_list: List[str] = Field(default_factory=list)
+
+    # ── Comprehensive Services (Home page) ───────────────────
+    comprehensive_services_eyebrow: Optional[str] = None
+    comprehensive_services_title: Optional[str] = None
+    comprehensive_services_description: Optional[str] = None
+    comprehensive_services: List[ComprehensiveServiceCard] = Field(default_factory=list)
+
+    # ── Footer ──────────────────────────────────────────────
+    footer_tagline: Optional[str] = None
+    footer_description: Optional[str] = None
+    footer_image: Optional[str] = None
+
+    # ── Contact CTA ─────────────────────────────────────────
+    cta_title: Optional[str] = None
+    cta_description: Optional[str] = None
+
+    # ── Legal pages ─────────────────────────────────────────
+    privacy_sections: List[LegalSection] = Field(default_factory=list)
+    terms_sections: List[LegalSection] = Field(default_factory=list)
+    refund_sections: List[LegalSection] = Field(default_factory=list)
+
+    # ── Booking form config ─────────────────────────────────
+    booking_form_config: Optional[BookingFormConfig] = None
+
+    is_active: bool = True
+
+    class Settings:
+        name = "website_settings"
+
+class SocialLinks(TimestampedDocument):
+    """Social media profile links."""
+
+    facebook: Optional[str] = None
+    instagram: Optional[str] = None
+    linkedin: Optional[str] = None
+    youtube: Optional[str] = None
+    whatsapp: Optional[str] = None
+
+    class Settings:
+        name = "social_links"
+
+class SEOSettings(TimestampedDocument):
+    """Per-page (or global) SEO configuration.
+
+    ``page_key`` identifies the page the settings apply to (e.g. ``home``,
+    ``services``, ``global``).
+    """
+
+    page_key: str = "global"
+    meta_title: Optional[str] = None
+    meta_description: Optional[str] = None
+    meta_keywords: List[str] = Field(default_factory=list)
+    canonical_url: Optional[str] = None
+    og_image: Optional[str] = None
+    schema_markup: Optional[str] = None
+
+    class Settings:
+        name = "seo_settings"
