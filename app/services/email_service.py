@@ -21,17 +21,60 @@ logger = get_logger(__name__)
 _jinja = Environment(autoescape=select_autoescape(["html", "xml"]))
 
 _BASE_TEMPLATE = """\
-<div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;border:1px solid #eee;border-radius:8px;overflow:hidden">
-  <div style="background:#0f766e;color:#fff;padding:20px 24px">
-    <h2 style="margin:0">{{ brand }}</h2>
-  </div>
-  <div style="padding:24px;color:#333;line-height:1.6">
-    {{ body }}
-  </div>
-  <div style="background:#f9fafb;color:#888;padding:16px 24px;font-size:12px">
-    &copy; {{ brand }}. This is an automated message, please do not reply.
-  </div>
-</div>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{ subject }}</title>
+</head>
+<body style="margin:0;padding:0;background-color:#0f172a;font-family:'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;">
+<!-- Outer wrapper -->
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:linear-gradient(180deg,#0f172a 0%,#134e4a 50%,#0f172a 100%);min-height:100vh;">
+<tr><td align="center" style="padding:40px 16px;">
+
+<!-- Main card -->
+<table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0" style="max-width:600px;width:100%;border-radius:24px;overflow:hidden;box-shadow:0 25px 60px rgba(0,0,0,0.5),0 0 80px rgba(20,184,166,0.15);">
+
+  <!-- Gold accent strip -->
+  <tr><td style="height:4px;background:linear-gradient(90deg,#d4a853,#f5d98a,#d4a853);"></td></tr>
+
+  <!-- Header -->
+  <tr>
+    <td style="background:linear-gradient(135deg,#1e293b 0%,#0f172a 100%);padding:32px 40px 24px;text-align:center;border-bottom:1px solid rgba(148,163,184,0.1);">
+      <!-- Logo Circle -->
+      <div style="display:inline-block;width:56px;height:56px;border-radius:50%;background:linear-gradient(135deg,#0d9488,#14b8a6);text-align:center;line-height:56px;font-size:24px;font-weight:700;color:#ffffff;margin-bottom:16px;box-shadow:0 4px 20px rgba(20,184,166,0.4);">S</div>
+      <h1 style="margin:0;font-size:22px;font-weight:700;color:#f1f5f9;letter-spacing:0.5px;">{{ brand }}</h1>
+      <p style="margin:6px 0 0;font-size:12px;color:#94a3b8;text-transform:uppercase;letter-spacing:2px;">Healthcare &amp; Nursing Services</p>
+    </td>
+  </tr>
+
+  <!-- Body content -->
+  <tr>
+    <td style="background:linear-gradient(180deg,#1e293b 0%,#1a2332 100%);padding:36px 40px;">
+      {{ body }}
+    </td>
+  </tr>
+
+  <!-- Footer -->
+  <tr>
+    <td style="background:#0f172a;padding:24px 40px;text-align:center;border-top:1px solid rgba(148,163,184,0.08);">
+      <p style="margin:0 0 8px;font-size:12px;color:#64748b;">&copy; 2025 {{ brand }}. All rights reserved.</p>
+      <p style="margin:0;font-size:11px;color:#475569;">This is an automated message. Please do not reply directly to this email.</p>
+    </td>
+  </tr>
+
+  <!-- Bottom accent strip -->
+  <tr><td style="height:3px;background:linear-gradient(90deg,#0d9488,#14b8a6,#0d9488);"></td></tr>
+
+</table>
+<!-- /Main card -->
+
+</td></tr>
+</table>
+<!-- /Outer wrapper -->
+</body>
+</html>
 """
 
 
@@ -41,9 +84,9 @@ class EmailService:
     def __init__(self) -> None:
         self.enabled = settings.email_enabled
 
-    def _render(self, body_html: str) -> str:
+    def _render(self, body_html: str, subject: str = "") -> str:
         template = _jinja.from_string(_BASE_TEMPLATE)
-        return template.render(brand=settings.SMTP_FROM_NAME, body=body_html)
+        return template.render(brand=settings.SMTP_FROM_NAME, body=body_html, subject=subject)
 
     async def send(
         self,
@@ -60,7 +103,7 @@ class EmailService:
             )
             return False
 
-        rendered_html = self._render(body_html)
+        rendered_html = self._render(body_html, subject=subject)
 
         # 1. Primary: Send via Resend REST API if configured
         if settings.RESEND_API_KEY:
@@ -136,21 +179,89 @@ class EmailService:
 
     async def send_staff_otp(self, to: str, otp: str) -> bool:
         """Send an email verification 6-digit OTP to registering staff."""
+        # Build individual digit boxes for the OTP
+        digits = list(otp)
+        digit_boxes = ""
+        for d in digits:
+            digit_boxes += (
+                f'<td style="width:48px;height:58px;background:linear-gradient(180deg,#134e4a,#0f3d3a);'
+                f'border:2px solid #14b8a6;border-radius:12px;text-align:center;vertical-align:middle;'
+                f'font-size:28px;font-weight:700;color:#5eead4;font-family:\'Courier New\',monospace;'
+                f'letter-spacing:2px;box-shadow:0 0 16px rgba(20,184,166,0.25),inset 0 1px 0 rgba(255,255,255,0.05);">'
+                f'{d}</td><td style="width:8px;"></td>'
+            )
+
         body = f"""
-        <div style="text-align: center; padding: 10px 0;">
-          <h3 style="color: #0f766e; margin-bottom: 8px;">Staff Verification Code</h3>
-          <p style="color: #4b5563; font-size: 14px; margin-bottom: 24px;">Use the verification code below to verify your email address and continue registration.</p>
-          <div style="display: inline-block; background: #f0fdfa; border: 2px dashed #0d9488; border-radius: 12px; padding: 16px 36px; margin: 0 auto;">
-            <span style="font-size: 34px; font-weight: bold; font-family: monospace; letter-spacing: 8px; color: #0f766e;">{otp}</span>
-          </div>
-          <p style="color: #9ca3af; font-size: 12px; margin-top: 20px;">This code is valid for 10 minutes. If you did not request this verification, you can safely ignore this email.</p>
-        </div>
-        """
+<!-- Greeting -->
+<p style="margin:0 0 6px;font-size:15px;color:#94a3b8;">Hello,</p>
+<p style="margin:0 0 24px;font-size:15px;color:#cbd5e1;line-height:1.6;">
+  You've requested to verify your email for <strong style="color:#5eead4;">Staff Registration</strong>. Use the code below to complete your verification:
+</p>
+
+<!-- OTP Container -->
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+<tr><td align="center" style="padding:8px 0 32px;">
+  <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="background:linear-gradient(135deg,rgba(15,23,42,0.8),rgba(30,41,59,0.9));border:1px solid rgba(20,184,166,0.3);border-radius:20px;padding:28px 32px;box-shadow:0 8px 40px rgba(0,0,0,0.3),0 0 60px rgba(20,184,166,0.08);">
+  <tr><td align="center">
+    <p style="margin:0 0 4px;font-size:11px;text-transform:uppercase;letter-spacing:3px;color:#64748b;font-weight:600;">Verification Code</p>
+  </td></tr>
+  <tr><td align="center" style="padding:16px 0 12px;">
+    <table role="presentation" cellpadding="0" cellspacing="0" border="0">
+    <tr>
+      {digit_boxes}
+    </tr>
+    </table>
+  </td></tr>
+  <tr><td align="center">
+    <table role="presentation" cellpadding="0" cellspacing="0" border="0">
+    <tr>
+      <td style="width:16px;height:16px;vertical-align:middle;">
+        <div style="width:8px;height:8px;background:#f59e0b;border-radius:50%;box-shadow:0 0 6px rgba(245,158,11,0.5);"></div>
+      </td>
+      <td style="vertical-align:middle;padding-left:6px;">
+        <span style="font-size:12px;color:#fbbf24;font-weight:600;">Expires in 10 minutes</span>
+      </td>
+    </tr>
+    </table>
+  </td></tr>
+  </table>
+</td></tr>
+</table>
+
+<!-- Security Notice -->
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:24px;">
+<tr>
+  <td style="background:rgba(15,23,42,0.6);border:1px solid rgba(148,163,184,0.1);border-radius:12px;padding:16px 20px;">
+    <table role="presentation" cellpadding="0" cellspacing="0" border="0">
+    <tr>
+      <td style="width:36px;vertical-align:top;padding-top:2px;">
+        <div style="width:32px;height:32px;background:linear-gradient(135deg,#0d9488,#14b8a6);border-radius:8px;text-align:center;line-height:32px;font-size:16px;">&#128274;</div>
+      </td>
+      <td style="padding-left:12px;">
+        <p style="margin:0 0 4px;font-size:13px;font-weight:600;color:#e2e8f0;">Security Notice</p>
+        <p style="margin:0;font-size:12px;color:#94a3b8;line-height:1.5;">Never share this code with anyone. Our team will never ask for your verification code. If you didn't request this, please ignore this email.</p>
+      </td>
+    </tr>
+    </table>
+  </td>
+</tr>
+</table>
+
+<!-- Divider -->
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:20px;">
+<tr><td style="height:1px;background:linear-gradient(90deg,transparent,rgba(148,163,184,0.2),transparent);"></td></tr>
+</table>
+
+<!-- Help text -->
+<p style="margin:0;font-size:12px;color:#64748b;text-align:center;line-height:1.5;">
+  Having trouble? Contact us at <a href="mailto:support@srikrishnasevaniketan.in" style="color:#14b8a6;text-decoration:none;font-weight:600;">support@srikrishnasevaniketan.in</a>
+</p>
+"""
         return await self.send(
             to=to,
-            subject=f"{otp} is your Staff Verification Code - Srikrishna Seva Niketan",
+            subject=f"{otp} — Your Staff Verification Code | Srikrishna Seva Niketan",
             body_html=body,
-            text_fallback=f"Your staff verification code is {otp}. Valid for 10 minutes.",
+            text_fallback=f"Your Srikrishna Seva Niketan staff verification code is: {otp}. This code expires in 10 minutes. Do not share this code with anyone.",
         )
 
     # ---- Convenience templated senders ----
