@@ -293,6 +293,14 @@ async def create_assignment(
         link="/assignments",
         reference_id=str(doc.id),
     )
+    # Also notify the staff member in their own portal panel.
+    await notification_service.create(
+        title="New duty assignment",
+        message=f"You are assigned to {customer.name} ({_place_text(doc)}, {doc.shift} shift) from {doc.start_date.isoformat()}.",
+        type=NotificationType.ASSIGNMENT,
+        employee_id=str(employee.id),
+        reference_id=str(doc.id),
+    )
 
     # Email the staff member their new posting (self-registered staff only have
     # an email). A mail failure must never fail the assignment, so it is guarded.
@@ -325,12 +333,19 @@ async def update_assignment(
     data = _apply_duration(data, data.get("start_date") or existing.start_date)
     doc = await _assignments.update(assignment_id, data, actor)
 
-    # Keep the staff member's availability in sync with the engagement status.
+    # Keep the staff member's availability in sync + tell them about status changes.
     if "status" in data:
         if doc.status in _OCCUPYING:
             await _set_employee_status(doc.employee_id, EmployeeStatus.ASSIGNED)
         elif doc.status in (AssignmentStatus.COMPLETED, AssignmentStatus.CANCELLED):
             await _set_employee_status(doc.employee_id, EmployeeStatus.AVAILABLE)
+        await notification_service.create(
+            title="Assignment updated",
+            message=f"Your assignment with {doc.customer_name} is now {doc.status}.",
+            type=NotificationType.ASSIGNMENT,
+            employee_id=doc.employee_id,
+            reference_id=str(doc.id),
+        )
     return item_response(AssignmentResponse, doc, "Assignment updated")
 
 

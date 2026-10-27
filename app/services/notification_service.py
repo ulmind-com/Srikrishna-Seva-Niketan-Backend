@@ -25,15 +25,21 @@ class NotificationService:
         *,
         type: NotificationType = NotificationType.SYSTEM,
         user_id: Optional[str] = None,
+        employee_id: Optional[str] = None,
         link: Optional[str] = None,
         reference_id: Optional[str] = None,
     ) -> Notification:
-        """Create a notification (broadcast when ``user_id`` is ``None``)."""
+        """Create a notification.
+
+        Broadcast to all admins when ``user_id`` is ``None``; set ``employee_id``
+        to target a staff-portal employee instead of an admin.
+        """
         notification = Notification(
             title=title,
             message=message,
             type=type,
             user_id=user_id,
+            employee_id=employee_id,
             link=link,
             reference_id=reference_id,
         )
@@ -46,8 +52,14 @@ class NotificationService:
         page_size: int,
         is_read: Optional[bool] = None,
     ) -> Tuple[List[Notification], int]:
-        """List notifications visible to ``user_id`` (own + broadcast)."""
-        filters: dict = {"$or": [{"user_id": user_id}, {"user_id": None}]}
+        """List notifications visible to ``user_id`` (own + broadcast).
+
+        Staff-targeted notifications (``employee_id`` set) are excluded.
+        """
+        filters: dict = {
+            "employee_id": None,
+            "$or": [{"user_id": user_id}, {"user_id": None}],
+        }
         if is_read is not None:
             filters = {"$and": [filters, {"is_read": is_read}]}
         return await self.repo.paginate(
@@ -55,15 +67,60 @@ class NotificationService:
         )
 
     async def unread_count(self, user_id: str) -> int:
-        """Count unread notifications for ``user_id`` (own + broadcast)."""
+        """Count unread admin notifications for ``user_id`` (own + broadcast)."""
         return await self.repo.count(
             {
                 "$and": [
+                    {"employee_id": None},
                     {"$or": [{"user_id": user_id}, {"user_id": None}]},
                     {"is_read": False},
                 ]
             }
         )
+
+    # ---- Staff-portal (employee) notifications ----
+
+    async def paginate_for_employee(
+        self,
+        employee_id: str,
+        page: int,
+        page_size: int,
+        is_read: Optional[bool] = None,
+    ) -> Tuple[List[Notification], int]:
+        """List a staff-portal employee's own notifications."""
+        filters: dict = {"employee_id": employee_id}
+        if is_read is not None:
+            filters["is_read"] = is_read
+        return await self.repo.paginate(
+            filters=filters, page=page, page_size=page_size
+        )
+
+    async def unread_count_for_employee(self, employee_id: str) -> int:
+        """Count an employee's unread notifications."""
+        return await self.repo.count(
+            {"employee_id": employee_id, "is_read": False}
+        )
+
+    async def mark_read_for_employee(
+        self, notification_id: str, employee_id: str
+    ) -> Notification:
+        """Mark one of the employee's own notifications as read."""
+        notification = await self.repo.get(notification_id)
+        if notification is None or notification.employee_id != employee_id:
+            raise NotFoundException("Notification not found")
+        notification.is_read = True
+        notification.read_at = dt.datetime.now(dt.timezone.utc)
+        notification.touch()
+        await notification.save()
+        return notification
+
+    async def mark_all_read_for_employee(self, employee_id: str) -> int:
+        """Mark all of an employee's notifications as read."""
+        now = dt.datetime.now(dt.timezone.utc)
+        result = await Notification.find(
+            {"employee_id": employee_id, "is_read": False}
+        ).update({"$set": {"is_read": True, "read_at": now, "updated_at": now}})
+        return getattr(result, "modified_count", 0)
 
     async def mark_read(self, notification_id: str, user_id: str) -> Notification:
         """Mark a single notification as read."""
@@ -82,6 +139,7 @@ class NotificationService:
         result = await Notification.find(
             {
                 "$and": [
+                    {"employee_id": None},
                     {"$or": [{"user_id": user_id}, {"user_id": None}]},
                     {"is_read": False},
                 ]

@@ -29,7 +29,7 @@ import secrets
 import string
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, Form, Request, Response, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Query, Request, Response, UploadFile
 
 from app.api.helpers import item_response
 from app.config import settings
@@ -41,6 +41,7 @@ from app.core.exceptions import (
 )
 from app.core.limiter import limiter
 from app.core.responses import success_response
+from app.services.notification_service import notification_service
 from app.core.security import (
     ACCESS_TOKEN_TYPE,
     REFRESH_TOKEN_TYPE,
@@ -490,3 +491,57 @@ async def submit_me(staff: Employee = Depends(get_current_staff)) -> dict:
         data=_profile(staff),
         message="Submitted — a super admin will review your profile shortly",
     )
+
+
+# ---- Notifications (the staff member's own live feed) ----
+
+def _notif(n) -> dict:
+    return {
+        "id": str(n.id),
+        "title": n.title,
+        "message": n.message,
+        "type": str(n.type),
+        "is_read": n.is_read,
+        "reference_id": n.reference_id,
+        "created_at": n.created_at.isoformat() if n.created_at else None,
+    }
+
+
+@router.get("/me/notifications", summary="My notifications")
+async def my_notifications(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    is_read: Optional[bool] = Query(None),
+    staff: Employee = Depends(get_current_staff),
+) -> dict:
+    items, total = await notification_service.paginate_for_employee(
+        str(staff.id), page=page, page_size=page_size, is_read=is_read
+    )
+    return success_response(
+        data={"items": [_notif(n) for n in items], "total": total}
+    )
+
+
+@router.get("/me/notifications/unread-count", summary="My unread count")
+async def my_unread_count(staff: Employee = Depends(get_current_staff)) -> dict:
+    unread = await notification_service.unread_count_for_employee(str(staff.id))
+    return success_response(data={"unread": unread})
+
+
+@router.post("/me/notifications/{notification_id}/read", summary="Mark one read")
+async def mark_my_notification_read(
+    notification_id: str,
+    staff: Employee = Depends(get_current_staff),
+) -> dict:
+    n = await notification_service.mark_read_for_employee(
+        notification_id, str(staff.id)
+    )
+    return success_response(data=_notif(n))
+
+
+@router.post("/me/notifications/read-all", summary="Mark all read")
+async def mark_all_my_notifications_read(
+    staff: Employee = Depends(get_current_staff),
+) -> dict:
+    updated = await notification_service.mark_all_read_for_employee(str(staff.id))
+    return success_response(data={"updated": updated})

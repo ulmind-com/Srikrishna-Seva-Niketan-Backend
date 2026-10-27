@@ -16,6 +16,9 @@ class Notification(TimestampedDocument):
 
     # ``None`` user_id means the notification is broadcast to all admins.
     user_id: Optional[str] = None
+    # When set, the notification belongs to a staff-portal employee (a nurse),
+    # not an admin user. Admin feeds exclude these; the staff portal shows them.
+    employee_id: Optional[str] = None
     type: NotificationType = NotificationType.SYSTEM
     title: str
     message: str = ""
@@ -28,6 +31,7 @@ class Notification(TimestampedDocument):
         name = "notifications"
         indexes = [
             [("user_id", pymongo.ASCENDING)],
+            [("employee_id", pymongo.ASCENDING)],
             [("is_read", pymongo.ASCENDING)],
             [("created_at", pymongo.DESCENDING)],
         ]
