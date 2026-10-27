@@ -10,7 +10,7 @@ from beanie import Indexed
 from pydantic import Field
 
 from app.models.base import TimestampedDocument
-from app.models.enums import AssignmentStatus, ShiftType
+from app.models.enums import AssignmentPlace, AssignmentStatus, ShiftType
 
 
 class Assignment(TimestampedDocument):
@@ -23,6 +23,12 @@ class Assignment(TimestampedDocument):
 
     # Multi-location scoping (both staff & customer share this branch).
     location_id: Indexed(str)  # type: ignore[valid-type]
+
+    # Where the staff member is posted — the customer's home, a hospital, a
+    # nursing home, etc. ``place_name`` carries the hospital / nursing-home name.
+    place_type: AssignmentPlace = AssignmentPlace.HOME
+    place_name: Optional[str] = None
+    address: Optional[str] = None
 
     shift: ShiftType = ShiftType.FULL_24H
     start_date: dt.date

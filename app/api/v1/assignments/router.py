@@ -17,6 +17,7 @@ from app.models.assignment import Assignment
 from app.models.customer import Customer
 from app.models.employee import Employee
 from app.models.enums import AssignmentStatus, EmployeeStatus, NotificationType
+from app.models.location import Location
 from app.repositories.base import BaseRepository
 from app.schemas.assignment import (
     AssignmentCreate,
@@ -45,6 +46,19 @@ async def _set_employee_status(employee_id: str, status: EmployeeStatus) -> None
         emp.status = status
         emp.touch()
         await emp.save()
+
+
+def _apply_duration(data: dict, start: Optional[dt.date]) -> dict:
+    """Turn a ``duration_days`` input into a concrete ``end_date``.
+
+    ``duration_days`` is a convenience for the admin ("assign for 10 days")
+    and is never stored — the engagement's end date is the source of truth.
+    An explicit ``end_date`` always wins.
+    """
+    days = data.pop("duration_days", None)
+    if days and not data.get("end_date") and start is not None:
+        data["end_date"] = start + dt.timedelta(days=days - 1)
+    return data
 
 
 @router.get("", summary="List assignments")
@@ -80,6 +94,79 @@ async def list_assignments(
     return paginated_response(AssignmentResponse, items, total, params)
 
 
+@router.get("/deployment", summary="Branch-wise staff deployment overview")
+async def deployment_overview(
+    actor: ActorContext = Depends(require_permission("assignments", "view")),
+) -> dict:
+    """Who is deployed, who is free — per branch.
+
+    Super-admins see every branch; a branch-scoped manager sees only their own,
+    so the same screen answers "how many of my staff are out, how many are left,
+    and how many days until each one is back".
+    """
+    today = dt.datetime.combine(dt.date.today(), dt.time.min)
+
+    locations = await Location.find({"is_active": True}).sort("order").to_list()
+    if actor.is_scoped:
+        locations = [loc for loc in locations if str(loc.id) in actor.location_ids]
+
+    branches: list[dict] = []
+    for loc in locations:
+        loc_id = str(loc.id)
+
+        employees = await Employee.find(
+            {"location_id": loc_id, "is_active": True}
+        ).to_list()
+
+        # Engagements that still occupy someone today (or start later).
+        running = await Assignment.find(
+            {
+                "location_id": loc_id,
+                "status": {"$in": [s.value for s in _OCCUPYING]},
+                "$or": [{"end_date": None}, {"end_date": {"$gte": today}}],
+            }
+        ).to_list()
+        running.sort(key=lambda a: (a.end_date is None, a.end_date or dt.date.max))
+
+        busy_ids = {a.employee_id for a in running}
+        free = [e for e in employees if str(e.id) not in busy_ids]
+
+        branches.append(
+            {
+                "location_id": loc_id,
+                "location_name": loc.name,
+                "location_code": loc.code,
+                "city": loc.city,
+                "total_staff": len(employees),
+                "assigned_count": len(busy_ids),
+                "available_count": len(free),
+                "assignments": [
+                    AssignmentResponse.model_validate(a).model_dump(mode="json")
+                    for a in running
+                ],
+                "available_staff": [
+                    {
+                        "id": str(e.id),
+                        "name": e.name,
+                        "code": e.code,
+                        "category": e.category,
+                        "phone": e.phone,
+                        "photo": e.photo.model_dump(mode="json") if e.photo else None,
+                    }
+                    for e in sorted(free, key=lambda e: e.name.lower())
+                ],
+            }
+        )
+
+    totals = {
+        "total_staff": sum(b["total_staff"] for b in branches),
+        "assigned_count": sum(b["assigned_count"] for b in branches),
+        "available_count": sum(b["available_count"] for b in branches),
+        "branches": len(branches),
+    }
+    return success_response(data={"totals": totals, "branches": branches})
+
+
 @router.get("/{assignment_id}", summary="Get assignment")
 async def get_assignment(
     assignment_id: str,
@@ -107,6 +194,7 @@ async def create_assignment(
     ensure_can_access(actor, customer.location_id)
 
     data = payload.model_dump(exclude_unset=True)
+    data = _apply_duration(data, payload.start_date)
     data["location_id"] = customer.location_id
     data["customer_name"] = customer.name
     data["employee_name"] = employee.name
@@ -138,6 +226,7 @@ async def update_assignment(
     existing = await _assignments.get_or_404(assignment_id)
     ensure_can_access(actor, existing.location_id)
     data = payload.model_dump(exclude_unset=True)
+    data = _apply_duration(data, data.get("start_date") or existing.start_date)
     doc = await _assignments.update(assignment_id, data, actor)
 
     # Keep the staff member's availability in sync with the engagement status.

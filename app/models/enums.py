@@ -140,6 +140,15 @@ class ShiftType(StrEnum):
     CUSTOM = "custom"
 
 
+class AssignmentPlace(StrEnum):
+    """Where the staff member is posted for an engagement."""
+
+    HOME = "home"
+    HOSPITAL = "hospital"
+    NURSING_HOME = "nursing_home"
+    OTHER = "other"
+
+
 class AssignmentStatus(StrEnum):
     """Lifecycle of a staff-to-customer engagement."""
 
