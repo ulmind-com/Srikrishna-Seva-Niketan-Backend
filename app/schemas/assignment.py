@@ -26,6 +26,7 @@ class AssignmentCreate(BaseModel):
     status: AssignmentStatus = AssignmentStatus.SCHEDULED
     customer_rate: Optional[int] = Field(None, ge=0)
     employee_payout: Optional[int] = Field(None, ge=0)
+    other_expense: Optional[int] = Field(None, ge=0)
     notes: Optional[str] = Field(None, max_length=2000)
     # location_id is derived from the customer/employee, not supplied directly.
 
@@ -41,6 +42,7 @@ class AssignmentUpdate(BaseModel):
     status: Optional[AssignmentStatus] = None
     customer_rate: Optional[int] = Field(None, ge=0)
     employee_payout: Optional[int] = Field(None, ge=0)
+    other_expense: Optional[int] = Field(None, ge=0)
     notes: Optional[str] = Field(None, max_length=2000)
 
 
@@ -59,6 +61,7 @@ class AssignmentResponse(IdTimestampSchema):
     status: AssignmentStatus
     customer_rate: Optional[int] = None
     employee_payout: Optional[int] = None
+    other_expense: Optional[int] = None
     notes: Optional[str] = None
 
     # ---- Derived progress (so the admin sees how much of the engagement is

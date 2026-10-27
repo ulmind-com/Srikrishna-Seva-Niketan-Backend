@@ -36,8 +36,9 @@ class Assignment(TimestampedDocument):
 
     status: AssignmentStatus = AssignmentStatus.SCHEDULED
 
-    customer_rate: Optional[int] = None  # income per day/period
-    employee_payout: Optional[int] = None  # expense per day/period
+    customer_rate: Optional[int] = None  # contract value — revenue for this engagement
+    employee_payout: Optional[int] = None  # paid to the staff member — an expense
+    other_expense: Optional[int] = None  # misc cost for this engagement (travel, kit…)
 
     notes: Optional[str] = None
 

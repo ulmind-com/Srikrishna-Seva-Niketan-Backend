@@ -52,51 +52,77 @@ async def profit_loss(
     start: Optional[dt.date] = None,
     end: Optional[dt.date] = None,
 ) -> Dict[str, Any]:
-    """Income (customer payments) − expenses, with breakdowns and payslips."""
+    """Assignment-driven P&L.
+
+    Revenue is the contract value (``customer_rate``) of each engagement; the
+    direct costs are the staff payout and any other engagement expense entered
+    at assignment time, plus standalone expenses from the Expenses ledger.
+    Profit = revenue − all of those. Everything is filtered to the period
+    (assignments by ``start_date``, standalone expenses by ``date``).
+    """
     date_rng = _date_bounds(start, end)
-    pay_filter = _merge(scope, {"date": date_rng} if date_rng else None)
-    exp_filter = _merge(scope, {"date": date_rng} if date_rng else None)
 
-    payments = await Payment.find(pay_filter).to_list()
-    expenses = await Expense.find(exp_filter).to_list()
-
-    # Income: realised customer payments (paid + partial).
-    income = sum(p.amount for p in payments if p.status != PaymentStatus.PENDING)
-    income_by_mode: Dict[str, int] = defaultdict(int)
-    for p in payments:
-        if p.status != PaymentStatus.PENDING:
-            income_by_mode[str(p.mode)] += p.amount
-
-    total_expense = sum(e.amount for e in expenses)
-    expense_by_category: Dict[str, int] = defaultdict(int)
-    for e in expenses:
-        expense_by_category[e.category] += e.amount
-
-    # Payslips: per-employee payout from assignments overlapping the range.
-    assign_filter = _merge(scope)
+    # ---- Engagements: contract revenue, staff payout, other engagement cost ----
+    assign_filter = _merge(
+        scope, {"start_date": date_rng} if date_rng else None
+    )
     assignments = await Assignment.find(assign_filter).to_list()
+
+    revenue = 0
+    staff_payout = 0
+    assignment_other = 0
     payslips: Dict[str, Dict[str, Any]] = {}
     for a in assignments:
         if a.status == AssignmentStatus.CANCELLED:
             continue
-        if not a.employee_payout:
-            continue
-        slip = payslips.setdefault(
-            a.employee_id,
-            {"employee_id": a.employee_id, "employee_name": a.employee_name, "total_payout": 0, "engagements": 0},
-        )
-        slip["total_payout"] += a.employee_payout
-        slip["engagements"] += 1
+        revenue += a.customer_rate or 0
+        staff_payout += a.employee_payout or 0
+        assignment_other += a.other_expense or 0
+        if a.employee_payout:
+            slip = payslips.setdefault(
+                a.employee_id,
+                {
+                    "employee_id": a.employee_id,
+                    "employee_name": a.employee_name,
+                    "total_payout": 0,
+                    "engagements": 0,
+                },
+            )
+            slip["total_payout"] += a.employee_payout
+            slip["engagements"] += 1
+
+    # ---- Standalone expenses ledger (rent, utilities, etc.) ----
+    exp_filter = _merge(scope, {"date": date_rng} if date_rng else None)
+    expenses = await Expense.find(exp_filter).to_list()
+    general_expense = sum(e.amount for e in expenses)
+    expense_by_category: Dict[str, int] = defaultdict(int)
+    for e in expenses:
+        expense_by_category[e.category] += e.amount
+    if staff_payout:
+        expense_by_category["staff payout"] += staff_payout
+    if assignment_other:
+        expense_by_category["engagement expense"] += assignment_other
+
+    total_expense = staff_payout + assignment_other + general_expense
+    profit = revenue - total_expense
 
     return {
-        "income": income,
+        "income": revenue,  # alias kept for existing clients
+        "revenue": revenue,
+        "staff_payout": staff_payout,
+        "assignment_expense": assignment_other,
+        "general_expense": general_expense,
         "expense": total_expense,
-        "profit": income - total_expense,
-        "income_by_mode": dict(income_by_mode),
+        "profit": profit,
+        "margin_pct": round(profit / revenue * 100) if revenue else 0,
         "expense_by_category": dict(expense_by_category),
-        "payment_count": len(payments),
+        "assignment_count": sum(
+            1 for a in assignments if a.status != AssignmentStatus.CANCELLED
+        ),
         "expense_count": len(expenses),
-        "payslips": sorted(payslips.values(), key=lambda s: s["total_payout"], reverse=True),
+        "payslips": sorted(
+            payslips.values(), key=lambda s: s["total_payout"], reverse=True
+        ),
     }
 
 
