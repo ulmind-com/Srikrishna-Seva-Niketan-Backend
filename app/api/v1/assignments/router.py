@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
@@ -25,7 +26,10 @@ from app.schemas.assignment import (
     AssignmentUpdate,
 )
 from app.services.crud import CrudService
+from app.services.email_service import email_service
 from app.services.notification_service import notification_service
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/assignments", tags=["Assignments"])
 
@@ -46,6 +50,20 @@ async def _set_employee_status(employee_id: str, status: EmployeeStatus) -> None
         emp.status = status
         emp.touch()
         await emp.save()
+
+
+_PLACE_LABEL = {
+    "home": "Customer's Home",
+    "hospital": "Hospital",
+    "nursing_home": "Nursing Home",
+    "other": "Other",
+}
+
+
+def _place_text(doc: Assignment) -> str:
+    """Readable posting place, e.g. 'Hospital — Apollo Gleneagles'."""
+    label = _PLACE_LABEL.get(str(doc.place_type), str(doc.place_type))
+    return f"{label} — {doc.place_name}" if doc.place_name else label
 
 
 def _apply_duration(data: dict, start: Optional[dt.date]) -> dict:
@@ -275,6 +293,23 @@ async def create_assignment(
         link="/assignments",
         reference_id=str(doc.id),
     )
+
+    # Email the staff member their new posting (self-registered staff only have
+    # an email). A mail failure must never fail the assignment, so it is guarded.
+    if employee.email:
+        try:
+            await email_service.send_assignment_notice(
+                to=employee.email,
+                staff_name=employee.name,
+                customer_name=customer.name,
+                shift=str(doc.shift),
+                place=_place_text(doc),
+                start_date=doc.start_date.isoformat(),
+                end_date=doc.end_date.isoformat() if doc.end_date else "Ongoing",
+            )
+        except Exception:  # noqa: BLE001 — never block assignment on email
+            logger.warning("Assignment email failed", extra={"to": employee.email})
+
     return item_response(AssignmentResponse, doc, "Staff assigned")
 
 

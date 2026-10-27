@@ -304,6 +304,36 @@ class EmailService:
         )
         return await self.send(to, "Password Reset Request", body)
 
+    async def send_assignment_notice(
+        self,
+        to: str,
+        staff_name: str,
+        customer_name: str,
+        shift: str,
+        place: str,
+        start_date: str,
+        end_date: str,
+    ) -> bool:
+        shift_label = {
+            "day": "Day",
+            "night": "Night",
+            "full_24h": "24 Hours",
+            "custom": "Custom",
+        }.get(shift, shift)
+        body = (
+            f"<p>Dear {staff_name},</p>"
+            "<p>You have a new duty assignment.</p>"
+            "<table style='border-collapse:collapse'>"
+            f"<tr><td style='padding:4px 12px 4px 0'><b>Client</b></td><td>{customer_name}</td></tr>"
+            f"<tr><td style='padding:4px 12px 4px 0'><b>Posted at</b></td><td>{place}</td></tr>"
+            f"<tr><td style='padding:4px 12px 4px 0'><b>Shift</b></td><td>{shift_label}</td></tr>"
+            f"<tr><td style='padding:4px 12px 4px 0'><b>From</b></td><td>{start_date}</td></tr>"
+            f"<tr><td style='padding:4px 12px 4px 0'><b>To</b></td><td>{end_date}</td></tr>"
+            "</table>"
+            "<p>Please report on time. Contact the office for any queries.</p>"
+        )
+        return await self.send(to, "New Duty Assignment | Srikrishna Seva Niketan", body)
+
     async def send_admin_notification(self, subject: str, body_html: str) -> bool:
         if not settings.ADMIN_NOTIFICATION_EMAIL:
             return False
