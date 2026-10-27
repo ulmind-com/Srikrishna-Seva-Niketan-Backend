@@ -170,6 +170,9 @@ class WebsiteSettings(TimestampedDocument):
     tagline: Optional[str] = None
     logo: Optional[ImageAsset] = None
     favicon: Optional[ImageAsset] = None
+    # Super-admin's signature, printed as the "Authorized Signatory" on every
+    # staff ID card. Uploaded once from the admin Settings page.
+    authorized_signature: Optional[ImageAsset] = None
 
     theme_primary: Optional[str] = None
     theme_accent: Optional[str] = None

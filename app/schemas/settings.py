@@ -33,6 +33,7 @@ class WebsiteSettingsUpdate(BaseModel):
     tagline: Optional[str] = None
     logo: Optional[ImageAsset] = None
     favicon: Optional[ImageAsset] = None
+    authorized_signature: Optional[ImageAsset] = None
     theme_primary: Optional[str] = None
     theme_accent: Optional[str] = None
     font_family: Optional[str] = None
@@ -127,6 +128,7 @@ class WebsiteSettingsResponse(IdTimestampSchema):
     tagline: Optional[str] = None
     logo: Optional[ImageAsset] = None
     favicon: Optional[ImageAsset] = None
+    authorized_signature: Optional[ImageAsset] = None
     theme_primary: Optional[str] = None
     theme_accent: Optional[str] = None
     font_family: Optional[str] = None
