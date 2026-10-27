@@ -15,7 +15,7 @@ from app.models.customer import Customer
 from app.models.employee import Employee
 from app.models.enums import BookingStatus
 from app.models.equipment import Equipment, EquipmentRental
-from app.models.finance import Expense, Payment
+from app.models.finance import Expense
 from app.models.location import Location
 from app.models.service import Service
 
@@ -58,15 +58,21 @@ class DashboardService:
         # Active customers
         active_customers = await Customer.find({**scope, "is_active": True}).count()
 
-        # Revenue from paid/realised payments
-        paid_payments = await Payment.find(
-            {**scope, "status": {"$ne": "pending"}}
+        # Revenue & expense — assignment-driven, matching the P&L report:
+        # contract amounts in, staff payout + other engagement cost + the
+        # standalone expense ledger out.
+        all_assignments = await Assignment.find(
+            {**scope, "status": {"$ne": "cancelled"}}
         ).to_list()
-        total_revenue = sum(p.amount for p in paid_payments)
-
+        total_revenue = sum(a.customer_rate or 0 for a in all_assignments)
+        assignment_cost = sum(
+            (a.employee_payout or 0) + (a.other_expense or 0)
+            for a in all_assignments
+        )
         paid_expenses = await Expense.find(scope).to_list()
-        total_expense = sum(e.amount for e in paid_expenses)
+        total_expense = assignment_cost + sum(e.amount for e in paid_expenses)
         profit = total_revenue - total_expense
+        payment_count = len(all_assignments)
 
         # Organization-level counts
         (
@@ -102,10 +108,10 @@ class DashboardService:
                 loc_scope = {"location_id": loc_id}
                 b_staff = await Employee.find(loc_scope).count()
                 b_working = await Employee.find({**loc_scope, "status": "assigned"}).count()
-                b_payments = await Payment.find(
-                    {**loc_scope, "status": {"$ne": "pending"}}
+                b_assignments = await Assignment.find(
+                    {**loc_scope, "status": {"$ne": "cancelled"}}
                 ).to_list()
-                b_rev = sum(p.amount for p in b_payments)
+                b_rev = sum(a.customer_rate or 0 for a in b_assignments)
                 branches_summary.append({
                     "id": loc_id,
                     "name": loc.name,
@@ -133,7 +139,7 @@ class DashboardService:
                 "total": total_revenue,
                 "expense": total_expense,
                 "profit": profit,
-                "payment_count": len(paid_payments),
+                "payment_count": payment_count,
             },
             "assignments": {
                 "active": active_assignments,
