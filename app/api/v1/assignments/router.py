@@ -94,6 +94,67 @@ async def list_assignments(
     return paginated_response(AssignmentResponse, items, total, params)
 
 
+@router.get("/daily", summary="Daily shift roster")
+async def daily_roster(
+    date: Optional[dt.date] = Query(None, description="Defaults to today."),
+    actor: ActorContext = Depends(require_permission("assignments", "view")),
+) -> dict:
+    """Every shift running on one day, grouped by branch.
+
+    Answers "who is on duty today, on which shift, and where" — the register a
+    manager reads each morning. Scoped like the rest of the module, so a branch
+    manager only gets their own branches.
+    """
+    day = date or dt.date.today()
+    day_dt = dt.datetime.combine(day, dt.time.min)
+
+    filters: dict = actor.scope_filter()
+    filters["status"] = {"$in": [s.value for s in _OCCUPYING]}
+    filters["start_date"] = {"$lte": day_dt}
+    filters["$or"] = [{"end_date": None}, {"end_date": {"$gte": day_dt}}]
+
+    items = await Assignment.find(filters).to_list()
+    items.sort(key=lambda a: (a.employee_name or "").lower())
+
+    locations = {str(loc.id): loc for loc in await Location.find({}).to_list()}
+
+    shift_counts: dict[str, int] = {}
+    groups: dict[str, dict] = {}
+    for a in items:
+        shift_counts[a.shift.value] = shift_counts.get(a.shift.value, 0) + 1
+        group = groups.get(a.location_id)
+        if group is None:
+            loc = locations.get(a.location_id)
+            group = {
+                "location_id": a.location_id,
+                "location_name": loc.name if loc else "Unknown branch",
+                "location_code": loc.code if loc else "—",
+                "city": loc.city if loc else None,
+                "_order": loc.order if loc else 9999,
+                "count": 0,
+                "assignments": [],
+            }
+            groups[a.location_id] = group
+        group["count"] += 1
+        group["assignments"].append(
+            AssignmentResponse.model_validate(a).model_dump(mode="json")
+        )
+
+    branches = sorted(groups.values(), key=lambda g: (g.pop("_order"), g["location_name"]))
+
+    return success_response(
+        data={
+            "date": day.isoformat(),
+            "totals": {
+                "on_duty": len(items),
+                "branches": len(branches),
+                "by_shift": shift_counts,
+            },
+            "branches": branches,
+        }
+    )
+
+
 @router.get("/deployment", summary="Branch-wise staff deployment overview")
 async def deployment_overview(
     actor: ActorContext = Depends(require_permission("assignments", "view")),
