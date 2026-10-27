@@ -65,6 +65,11 @@ class Settings(BaseSettings):
     SMTP_SSL: bool = False
     ADMIN_NOTIFICATION_EMAIL: str = ""
 
+    # ---- Daily report scheduler ----
+    ENABLE_SCHEDULER: bool = True
+    REPORT_TIMEZONE: str = "Asia/Kolkata"
+    DAILY_REPORT_HOUR: int = 20  # 24h local time the daily report is emailed
+
     # ---- CORS ----
     # Comma-separated string in the environment; use ``cors_origins`` for the
     # parsed list (avoids pydantic-settings JSON-decoding complex env values).

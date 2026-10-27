@@ -58,3 +58,14 @@ async def report_daily_summary(
 ) -> dict:
     data = await report_service.daily_summary(_effective_scope(actor, location_id), on)
     return success_response(data=data)
+
+
+@router.post("/daily-email", summary="Send today's daily report email now")
+async def send_daily_email_now(
+    actor: ActorContext = Depends(require_permission("reports", "view")),
+) -> dict:
+    """Trigger the daily report email immediately (same as the nightly job)."""
+    from app.services.scheduler import send_daily_report
+
+    await send_daily_report()
+    return success_response(message="Daily report emailed to the super admins")

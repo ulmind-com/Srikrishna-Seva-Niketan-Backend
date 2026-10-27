@@ -23,6 +23,7 @@ from app.database.connection import (
     ping,
 )
 from app.database.seed import run_seed
+from app.services.scheduler import start_scheduler, stop_scheduler
 from app.middleware import RequestContextMiddleware, SecurityHeadersMiddleware
 
 logger = get_logger(__name__)
@@ -49,10 +50,12 @@ async def lifespan(app: FastAPI):
     await connect_to_mongo()
     await init_database()
     await run_seed()
+    start_scheduler()
     logger.info("Application startup complete")
 
     yield
 
+    stop_scheduler()
     await close_mongo_connection()
     logger.info("Application shutdown complete")
 
