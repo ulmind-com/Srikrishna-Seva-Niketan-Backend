@@ -20,7 +20,7 @@ jobs:
         run: |
           for i in 1 2 3; do
             code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 70 \
-              https://nupun-health-backend.onrender.com/health) || code=000
+              https://srikrishna-seva-niketan-backend-y3fe.onrender.com/health) || code=000
             echo "attempt $i -> HTTP $code"
             [ "$code" = "200" ] && exit 0
             sleep 20
