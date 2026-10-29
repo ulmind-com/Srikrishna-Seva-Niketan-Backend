@@ -17,3 +17,25 @@ async def test_assignment_defaults_pending(db):
     )
     assert a.acceptance_status == AcceptanceStatus.PENDING
     assert a.dest_lat is None and a.dest_lng is None
+
+
+_MONEY_KEYS = {
+    "customer_rate",
+    "employee_payout",
+    "other_expense",
+    "notes",
+    "billing_rate",
+    "daily_rate",
+}
+
+
+def test_staff_schema_has_no_money():
+    from app.schemas.assignment import StaffAssignmentResponse
+
+    assert _MONEY_KEYS.isdisjoint(StaffAssignmentResponse.model_fields.keys())
+
+
+def test_admin_response_has_acceptance():
+    from app.schemas.assignment import AssignmentResponse
+
+    assert "acceptance_status" in AssignmentResponse.model_fields

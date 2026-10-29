@@ -7,7 +7,12 @@ from typing import Optional
 
 from pydantic import BaseModel, Field, computed_field
 
-from app.models.enums import AssignmentPlace, AssignmentStatus, ShiftType
+from app.models.enums import (
+    AcceptanceStatus,
+    AssignmentPlace,
+    AssignmentStatus,
+    ShiftType,
+)
 from app.schemas.common import IdTimestampSchema
 
 
@@ -59,6 +64,12 @@ class AssignmentResponse(IdTimestampSchema):
     start_date: dt.date
     end_date: Optional[dt.date] = None
     status: AssignmentStatus
+    acceptance_status: AcceptanceStatus = AcceptanceStatus.PENDING
+    accepted_at: Optional[dt.datetime] = None
+    declined_at: Optional[dt.datetime] = None
+    decline_reason: Optional[str] = None
+    dest_lat: Optional[float] = None
+    dest_lng: Optional[float] = None
     customer_rate: Optional[int] = None
     employee_payout: Optional[int] = None
     other_expense: Optional[int] = None
@@ -103,3 +114,44 @@ class AssignmentResponse(IdTimestampSchema):
         if not total:
             return None
         return min(100, round(self.days_elapsed / total * 100))
+
+
+class StaffAssignmentResponse(IdTimestampSchema):
+    """Assignment as the nurse sees it — deliberately omits every money field.
+
+    No ``customer_rate`` / ``employee_payout`` / ``other_expense`` / ``notes``
+    exists on this class, so price can never leak to the staff portal.
+    ``customer_phone`` is denormalised by the router from the Customer record.
+    """
+
+    customer_name: str
+    customer_phone: Optional[str] = None
+    place_type: AssignmentPlace = AssignmentPlace.HOME
+    place_name: Optional[str] = None
+    address: Optional[str] = None
+    shift: ShiftType
+    start_date: dt.date
+    end_date: Optional[dt.date] = None
+    acceptance_status: AcceptanceStatus
+    dest_lat: Optional[float] = None
+    dest_lng: Optional[float] = None
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def total_days(self) -> Optional[int]:
+        if self.end_date is None:
+            return None
+        return (self.end_date - self.start_date).days + 1
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def days_remaining(self) -> Optional[int]:
+        total = self.total_days
+        if total is None:
+            return None
+        today = dt.date.today()
+        if today <= self.start_date:
+            return total
+        if self.end_date is not None and today > self.end_date:
+            return 0
+        return max(0, total - (today - self.start_date).days)
