@@ -59,13 +59,14 @@ async def list_bookings(
     date_from: Optional[str] = Query(None, description="ISO date lower bound"),
     date_to: Optional[str] = Query(None, description="ISO date upper bound"),
     source: Optional[str] = Query(None, description="Filter by source"),
-    _: ActorContext = Depends(require_permission("bookings", "view")),
+    location_id: Optional[str] = Query(None, description="Filter by location/branch"),
+    actor: ActorContext = Depends(require_permission("bookings", "view")),
 ) -> dict:
     items, total = await booking_service.paginate(
         page=params.page, page_size=params.page_size, search=params.search,
         sort_by=params.sort_by, sort_order=params.sort_direction,
         status=status, service_id=service_id, date_from=date_from, date_to=date_to,
-        source=source,
+        source=source, actor=actor, location_id=location_id,
     )
     return paginated_response(BookingResponse, items, total, params)
 
@@ -74,9 +75,12 @@ async def list_bookings(
 async def export_bookings(
     status: Optional[BookingStatus] = Query(None),
     source: Optional[str] = Query(None),
-    _: ActorContext = Depends(require_permission("bookings", "view")),
+    location_id: Optional[str] = Query(None, description="Filter by location/branch"),
+    actor: ActorContext = Depends(require_permission("bookings", "view")),
 ) -> StreamingResponse:
-    csv_data = await booking_service.export_csv(status=status, source=source)
+    csv_data = await booking_service.export_csv(
+        status=status, source=source, actor=actor, location_id=location_id
+    )
     return StreamingResponse(
         iter([csv_data]),
         media_type="text/csv",
@@ -87,9 +91,9 @@ async def export_bookings(
 @router.get("/{booking_id}", summary="Get booking")
 async def get_booking(
     booking_id: str,
-    _: ActorContext = Depends(require_permission("bookings", "view")),
+    actor: ActorContext = Depends(require_permission("bookings", "view")),
 ) -> dict:
-    booking = await booking_service.get_or_404(booking_id)
+    booking = await booking_service.get_or_404(booking_id, actor)
     return item_response(BookingResponse, booking)
 
 

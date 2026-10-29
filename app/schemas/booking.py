@@ -38,6 +38,7 @@ class BookingCreate(BaseModel):
 
     message: Optional[str] = Field(None, pattern=r"^[^<>]*$")
     source: Optional[str] = None
+    location_id: Optional[str] = None
 
 
 class BookingUpdate(BaseModel):
@@ -58,6 +59,7 @@ class BookingUpdate(BaseModel):
     pincode: Optional[str] = None
     emergency_contact_name: Optional[str] = None
     emergency_contact_phone: Optional[str] = None
+    location_id: Optional[str] = None
     admin_notes: Optional[str] = None
 
 
@@ -100,3 +102,4 @@ class BookingResponse(IdTimestampSchema):
     message: Optional[str] = None
     source: Optional[str] = None
     customer_id: Optional[str] = None
+    location_id: Optional[str] = None

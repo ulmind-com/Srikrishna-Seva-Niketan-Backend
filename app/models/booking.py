@@ -72,12 +72,14 @@ class Booking(TimestampedDocument):
     message: Optional[str] = None
     source: Optional[str] = None
     customer_id: Optional[str] = None
+    location_id: Optional[str] = None
 
     class Settings:
         name = "bookings"
         indexes = [
             [("reference", pymongo.ASCENDING)],
             [("status", pymongo.ASCENDING)],
+            [("location_id", pymongo.ASCENDING)],
             [("preferred_date", pymongo.DESCENDING)],
             [("service_id", pymongo.ASCENDING)],
             [("created_at", pymongo.DESCENDING)],
