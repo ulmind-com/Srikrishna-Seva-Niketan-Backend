@@ -166,3 +166,16 @@ class LocationStaffStat(BaseModel):
     working: int = 0
     available: int = 0
     revenue: float = 0.0
+
+
+class DeclineRequest(BaseModel):
+    """Optional reason a nurse gives when declining a posting."""
+
+    reason: Optional[str] = Field(None, max_length=500)
+
+
+class LocationPing(BaseModel):
+    """The nurse's current GPS, captured when opening a duty route."""
+
+    lat: float = Field(..., ge=-90, le=90)
+    lng: float = Field(..., ge=-180, le=180)

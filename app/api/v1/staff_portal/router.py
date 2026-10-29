@@ -52,11 +52,21 @@ from app.core.security import (
     verify_password,
 )
 from app.dependencies.staff_auth import STAFF_SCOPE, get_current_staff
+from app.models.assignment import Assignment
+from app.models.customer import Customer
 from app.models.email_otp import EmailOtp
 from app.models.employee import Employee
-from app.models.enums import StaffVerificationStatus
+from app.models.enums import (
+    AcceptanceStatus,
+    EmployeeStatus,
+    NotificationType,
+    StaffVerificationStatus,
+)
 from app.models.location import Location
+from app.schemas.assignment import StaffAssignmentResponse
 from app.schemas.staff_portal import (
+    DeclineRequest,
+    LocationPing,
     SendOtpRequest,
     StaffGoogleAuthRequest,
     StaffLoginRequest,
@@ -67,6 +77,7 @@ from app.schemas.staff_portal import (
 )
 from app.services.cloudinary_service import cloudinary_service
 from app.services.email_service import EmailService
+from app.services.geo_service import geo_service
 from app.utils.files import MAX_IMAGE_BYTES, read_validated_image
 
 router = APIRouter(prefix="/staff-portal", tags=["Staff Portal"])
@@ -545,3 +556,149 @@ async def mark_all_my_notifications_read(
 ) -> dict:
     updated = await notification_service.mark_all_read_for_employee(str(staff.id))
     return success_response(data={"updated": updated})
+
+
+# ---- Duties (the nurse's own assignments: respond + route) ----
+
+_PLACE_LABEL = {
+    "home": "Customer's Home",
+    "hospital": "Hospital",
+    "nursing_home": "Nursing Home",
+    "other": "Other",
+}
+
+
+def _place_text(a: Assignment) -> str:
+    label = _PLACE_LABEL.get(str(a.place_type), str(a.place_type))
+    return f"{label} — {a.place_name}" if a.place_name else label
+
+
+async def _own_assignment(assignment_id: str, staff: Employee) -> Assignment:
+    """Load an assignment, 404 unless it belongs to this nurse."""
+    a = await Assignment.get(assignment_id)
+    if a is None or a.employee_id != str(staff.id):
+        raise NotFoundException("Assignment not found")
+    return a
+
+
+async def _staff_item(a: Assignment, phone: Optional[str]) -> dict:
+    item = StaffAssignmentResponse.model_validate(a).model_dump(mode="json")
+    item["customer_phone"] = phone
+    return item
+
+
+@router.get("/me/assignments", summary="My duty assignments (price-free)")
+async def my_assignments(
+    pending: Optional[bool] = Query(None),
+    staff: Employee = Depends(get_current_staff),
+) -> dict:
+    filters: dict = {"employee_id": str(staff.id)}
+    if pending:
+        filters["acceptance_status"] = AcceptanceStatus.PENDING.value
+    rows = await Assignment.find(filters).sort("-start_date").to_list()
+    phones: dict[str, Optional[str]] = {}
+    for cid in {a.customer_id for a in rows}:
+        cust = await Customer.get(cid)
+        phones[cid] = cust.phone if cust else None
+    items = [await _staff_item(a, phones.get(a.customer_id)) for a in rows]
+    return success_response(data={"items": items, "total": len(items)})
+
+
+async def _customer_phone(a: Assignment) -> Optional[str]:
+    cust = await Customer.get(a.customer_id)
+    return cust.phone if cust else None
+
+
+@router.post("/me/assignments/{assignment_id}/accept", summary="Accept a duty")
+async def accept_assignment(
+    assignment_id: str,
+    staff: Employee = Depends(get_current_staff),
+) -> dict:
+    a = await _own_assignment(assignment_id, staff)
+    a.acceptance_status = AcceptanceStatus.ACCEPTED
+    a.accepted_at = dt.datetime.now(dt.timezone.utc)
+    a.declined_at = None
+    a.decline_reason = None
+    a.touch()
+    await a.save()
+    await notification_service.create(
+        title="Duty accepted",
+        message=f"{a.employee_name} accepted {a.customer_name} ({_place_text(a)}).",
+        type=NotificationType.ASSIGNMENT,
+        link="/assignments",
+        reference_id=str(a.id),
+    )
+    return success_response(
+        data=await _staff_item(a, await _customer_phone(a)), message="Duty accepted"
+    )
+
+
+@router.post("/me/assignments/{assignment_id}/decline", summary="Decline a duty")
+async def decline_assignment(
+    assignment_id: str,
+    payload: DeclineRequest,
+    staff: Employee = Depends(get_current_staff),
+) -> dict:
+    a = await _own_assignment(assignment_id, staff)
+    a.acceptance_status = AcceptanceStatus.DECLINED
+    a.declined_at = dt.datetime.now(dt.timezone.utc)
+    a.decline_reason = payload.reason
+    a.accepted_at = None
+    a.touch()
+    await a.save()
+    # Free the nurse so the office can reassign; the assignment is kept.
+    if staff.status != EmployeeStatus.AVAILABLE:
+        staff.status = EmployeeStatus.AVAILABLE
+        staff.touch()
+        await staff.save()
+    reason = f" Reason: {payload.reason}." if payload.reason else ""
+    await notification_service.create(
+        title="Duty declined — reassign",
+        message=f"{a.employee_name} declined {a.customer_name} ({_place_text(a)}).{reason}",
+        type=NotificationType.ASSIGNMENT,
+        link="/assignments",
+        reference_id=str(a.id),
+    )
+    return success_response(
+        data=await _staff_item(a, await _customer_phone(a)), message="Duty declined"
+    )
+
+
+@router.get("/me/assignments/{assignment_id}/route", summary="Route to the duty location")
+async def assignment_route(
+    assignment_id: str,
+    lat: float = Query(..., ge=-90, le=90),
+    lng: float = Query(..., ge=-180, le=180),
+    staff: Employee = Depends(get_current_staff),
+) -> dict:
+    a = await _own_assignment(assignment_id, staff)
+    dest_lat, dest_lng = a.dest_lat, a.dest_lng
+    if dest_lat is None or dest_lng is None:
+        coords = await geo_service.geocode(a.address or "")
+        if coords is not None:
+            dest_lat, dest_lng = coords
+    route = None
+    if dest_lat is not None and dest_lng is not None:
+        route = await geo_service.directions((lat, lng), (dest_lat, dest_lng))
+    return success_response(
+        data={
+            "distance_m": route["distance_m"] if route else None,
+            "duration_s": route["duration_s"] if route else None,
+            "geometry": route["geometry"] if route else None,
+            "dest_lat": dest_lat,
+            "dest_lng": dest_lng,
+        }
+    )
+
+
+@router.post("/me/location", summary="Record my current GPS")
+async def ping_location(
+    payload: LocationPing,
+    staff: Employee = Depends(get_current_staff),
+) -> dict:
+    staff.last_lat = payload.lat
+    staff.last_lng = payload.lng
+    staff.located_at = dt.datetime.now(dt.timezone.utc)
+    staff.touch()
+    await staff.save()
+    return success_response(data={"ok": True})
