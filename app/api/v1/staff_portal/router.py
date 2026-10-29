@@ -474,23 +474,11 @@ async def submit_me(staff: Employee = Depends(get_current_staff)) -> dict:
             "Please complete these first: " + ", ".join(m.replace("_", " ") for m in missing)
         )
 
-    # Server-side guard: reject submissions where document was flagged as fraud or name mismatch
-    if staff.document_verification:
-        doc_ver = staff.document_verification
-        if doc_ver.get("fraudRisk") == "high":
-            flags = doc_ver.get("fraudFlags") or []
-            reason = flags[0] if flags else "Failed anti-fraud security scan"
-            raise BadRequestException(
-                f"Government ID verification failed: {reason}. Please upload an authentic, unblurred original document."
-            )
-        if not doc_ver.get("nameMatched", True):
-            raise BadRequestException(
-                f"Government ID verification failed: The name on the uploaded document does not match your registered name ('{staff.name}')."
-            )
-        if not doc_ver.get("idNumberMatched", True):
-            raise BadRequestException(
-                "Government ID verification failed: The ID number on the document does not match the entered number."
-            )
+    # The browser OCR audit (document_verification) is ADVISORY only: it often
+    # misreads genuine government IDs (phone photos of Aadhaar, colored cards,
+    # holograms), so it must not hard-block onboarding. The result is stored on
+    # the record and surfaced to the super-admin, who reviews the uploaded
+    # document and makes the final verify/reject call.
 
     staff.verification_status = StaffVerificationStatus.PENDING
     staff.submitted_at = dt.datetime.now(dt.timezone.utc)
