@@ -65,6 +65,18 @@ class GeoService:
 
     async def geocode(self, address: str) -> Optional[Tuple[float, float]]:
         """Address text → ``(lat, lng)``. ``None`` on miss or failure."""
+        detailed = await self.geocode_detailed(address)
+        if detailed is None:
+            return None
+        return (detailed["lat"], detailed["lng"])
+
+    async def geocode_detailed(self, address: str) -> Optional[dict]:
+        """Address text → detailed geocode result with accuracy metadata.
+
+        Returns ``{"lat": float, "lng": float, "formatted_address": str,
+        "location_type": str, "is_approximate": bool, "results_count": int}``
+        or ``None`` on failure.
+        """
         if not address or not self._key:
             return None
         try:
@@ -74,18 +86,39 @@ class GeoService:
                 )
                 resp.raise_for_status()
                 data = resp.json()
-            loc = data["geocodingResults"][0]["geometry"]["location"]
-            return (float(loc["lat"]), float(loc["lng"]))
+            results = data.get("geocodingResults", [])
+            if not results:
+                return None
+            first = results[0]
+            loc = first["geometry"]["location"]
+            lat = float(loc["lat"])
+            lng = float(loc["lng"])
+            loc_type = first.get("geometry", {}).get("location_type", "approximate")
+            formatted = first.get("formatted_address") or address
+            is_approximate = str(loc_type).lower() == "approximate"
+            return {
+                "lat": lat,
+                "lng": lng,
+                "formatted_address": formatted,
+                "location_type": loc_type,
+                "is_approximate": is_approximate,
+                "results_count": len(results),
+            }
         except Exception:  # noqa: BLE001 — geo failure must never propagate
             logger.warning("Ola geocode failed", exc_info=True)
             return None
 
     async def directions(
-        self, origin: Tuple[float, float], dest: Tuple[float, float]
+        self,
+        origin: Tuple[float, float],
+        dest: Tuple[float, float],
+        route_preference: str = "shortest",
+        mode: str = "driving",
     ) -> Optional[dict]:
-        """Shortest route origin→dest.
+        """Real road routing origin→dest via Ola Maps Directions API.
 
-        Returns ``{"distance_m": int, "duration_s": int, "geometry": [[lng,lat],...]}``
+        Returns ``{"distance_m": int, "duration_s": int, "readable_distance": str,
+        "readable_duration": str, "geometry": [[lng,lat],...], "route_preference": str}``
         or ``None`` on failure.
         """
         if not self._key:
@@ -95,6 +128,8 @@ class GeoService:
                 "origin": f"{origin[0]},{origin[1]}",
                 "destination": f"{dest[0]},{dest[1]}",
                 "api_key": self._key,
+                "route_preference": route_preference,
+                "mode": mode,
             }
             async with _client() as client:
                 resp = await client.post(_DIRECTIONS_URL, params=params)
@@ -104,13 +139,18 @@ class GeoService:
             leg = route["legs"][0]
             distance_m = int(_scalar(leg.get("distance")))
             duration_s = int(_scalar(leg.get("duration")))
+            readable_distance = leg.get("readable_distance") or f"{distance_m / 1000:.1f} km"
+            readable_duration = leg.get("readable_duration") or f"{round(duration_s / 60)} mins"
             poly = route.get("overview_polyline")
             points = poly["points"] if isinstance(poly, dict) else poly
             geometry = _decode_polyline(points) if points else []
             return {
                 "distance_m": distance_m,
                 "duration_s": duration_s,
+                "readable_distance": readable_distance,
+                "readable_duration": readable_duration,
                 "geometry": geometry,
+                "route_preference": route_preference,
             }
         except Exception:  # noqa: BLE001 — geo failure must never propagate
             logger.warning("Ola directions failed", exc_info=True)

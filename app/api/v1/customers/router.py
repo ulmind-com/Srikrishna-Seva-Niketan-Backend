@@ -105,9 +105,10 @@ async def update_customer(
     data = payload.model_dump(exclude_unset=True)
     if "location_id" in data and data["location_id"]:
         ensure_can_access(actor, data["location_id"])
-    # Re-geocode when the address changed and no explicit pin was supplied.
-    if "address" in data:
-        await _ensure_coords(data)
+    # Re-geocode only when the address changed and no explicit pin was supplied.
+    if "address" in data and ("lat" not in data or data.get("lat") is None):
+        if existing.address != data["address"] or existing.lat is None or existing.lng is None:
+            await _ensure_coords(data)
     doc = await _customers.update(customer_id, data, actor)
     return item_response(CustomerResponse, doc, "Customer updated")
 

@@ -33,6 +33,9 @@ class AssignmentCreate(BaseModel):
     employee_payout: Optional[int] = Field(None, ge=0)
     other_expense: Optional[int] = Field(None, ge=0)
     notes: Optional[str] = Field(None, max_length=2000)
+    # Explicit confirmed coordinates (admin pin drop on the assignment)
+    dest_lat: Optional[float] = Field(None, ge=-90, le=90)
+    dest_lng: Optional[float] = Field(None, ge=-180, le=180)
     # location_id is derived from the customer/employee, not supplied directly.
 
 
@@ -49,6 +52,8 @@ class AssignmentUpdate(BaseModel):
     employee_payout: Optional[int] = Field(None, ge=0)
     other_expense: Optional[int] = Field(None, ge=0)
     notes: Optional[str] = Field(None, max_length=2000)
+    dest_lat: Optional[float] = Field(None, ge=-90, le=90)
+    dest_lng: Optional[float] = Field(None, ge=-180, le=180)
 
 
 class AssignmentResponse(IdTimestampSchema):

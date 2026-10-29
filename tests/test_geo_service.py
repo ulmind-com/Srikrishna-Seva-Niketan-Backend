@@ -81,14 +81,40 @@ async def test_directions_parses(monkeypatch):
     from app.services import geo_service as gs
 
     monkeypatch.setattr(gs, "_client", lambda: _FakeClient(post_resp=_FakeResp(_DIRECTIONS_BODY)))
-    result = await gs.geo_service.directions((22.57, 88.36), (22.60, 88.40))
+    result = await gs.geo_service.directions((22.57, 88.36), (22.60, 88.40), route_preference="fastest")
     assert result is not None
     assert result["distance_m"] == 12345
     assert result["duration_s"] == 1680
+    assert result["route_preference"] == "fastest"
+    assert "readable_distance" in result
+    assert "readable_duration" in result
     geom = result["geometry"]
     assert isinstance(geom, list) and len(geom) == 3
     # geometry is [lng, lat]; first decoded point is lat 38.5, lng -120.2
     assert geom[0] == pytest.approx([-120.2, 38.5], abs=1e-3)
+
+
+async def test_geocode_detailed(monkeypatch):
+    from app.services import geo_service as gs
+
+    detailed_body = {
+        "geocodingResults": [
+            {
+                "formatted_address": "Salt Lake Sector 5, Kolkata, India",
+                "geometry": {
+                    "location": {"lat": 22.5726, "lng": 88.3639},
+                    "location_type": "APPROXIMATE",
+                },
+            }
+        ]
+    }
+    monkeypatch.setattr(gs, "_client", lambda: _FakeClient(get_resp=_FakeResp(detailed_body)))
+    detail = await gs.geo_service.geocode_detailed("Salt Lake")
+    assert detail is not None
+    assert detail["lat"] == pytest.approx(22.5726)
+    assert detail["lng"] == pytest.approx(88.3639)
+    assert detail["is_approximate"] is True
+    assert detail["formatted_address"] == "Salt Lake Sector 5, Kolkata, India"
 
 
 async def test_directions_none_on_error(monkeypatch):
@@ -96,3 +122,32 @@ async def test_directions_none_on_error(monkeypatch):
 
     monkeypatch.setattr(gs, "_client", lambda: _FakeClient(post_resp=_FakeResp({}, status_code=500)))
     assert await gs.geo_service.directions((1.0, 1.0), (2.0, 2.0)) is None
+
+
+async def test_geocode_endpoint_requires_auth(client):
+    resp = await client.get("/api/v1/geo/geocode?address=Kolkata")
+    assert resp.status_code == 401
+
+
+async def test_geocode_endpoint_success(client, auth_headers, monkeypatch):
+    from app.services import geo_service as gs
+
+    detailed_body = {
+        "geocodingResults": [
+            {
+                "formatted_address": "Salt Lake Sector 5, Kolkata, India",
+                "geometry": {
+                    "location": {"lat": 22.5726, "lng": 88.3639},
+                    "location_type": "ROOFTOP",
+                },
+            }
+        ]
+    }
+    monkeypatch.setattr(gs, "_client", lambda: _FakeClient(get_resp=_FakeResp(detailed_body)))
+    resp = await client.get("/api/v1/geo/geocode?address=Salt+Lake", headers=auth_headers)
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    assert data["found"] is True
+    assert data["lat"] == pytest.approx(22.5726)
+    assert data["lng"] == pytest.approx(88.3639)
+    assert data["is_approximate"] is False

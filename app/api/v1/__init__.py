@@ -14,6 +14,7 @@ from app.api.v1.employees.router import router as employees_router
 from app.api.v1.equipment.router import router as equipment_router
 from app.api.v1.expenses.router import router as expenses_router
 from app.api.v1.faq.router import router as faq_router
+from app.api.v1.geo.router import router as geo_router
 from app.api.v1.infection_control.router import router as infection_control_router
 from app.api.v1.locations.router import router as locations_router
 from app.api.v1.notifications.router import router as notifications_router
@@ -44,6 +45,7 @@ api_router.include_router(videos_router)
 api_router.include_router(testimonials_router)
 api_router.include_router(staff_router)
 api_router.include_router(staff_portal_router)
+api_router.include_router(geo_router)
 api_router.include_router(faq_router)
 api_router.include_router(reviews_router)
 api_router.include_router(contact_router)

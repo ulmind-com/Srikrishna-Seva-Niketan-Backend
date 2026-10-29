@@ -661,6 +661,7 @@ async def assignment_route(
     assignment_id: str,
     lat: float = Query(..., ge=-90, le=90),
     lng: float = Query(..., ge=-180, le=180),
+    preference: str = Query("shortest", regex="^(shortest|fastest)$"),
     staff: Employee = Depends(get_current_staff),
 ) -> dict:
     a = await _own_assignment(assignment_id, staff)
@@ -671,14 +672,19 @@ async def assignment_route(
             dest_lat, dest_lng = coords
     route = None
     if dest_lat is not None and dest_lng is not None:
-        route = await geo_service.directions((lat, lng), (dest_lat, dest_lng))
+        route = await geo_service.directions(
+            (lat, lng), (dest_lat, dest_lng), route_preference=preference
+        )
     return success_response(
         data={
             "distance_m": route["distance_m"] if route else None,
             "duration_s": route["duration_s"] if route else None,
+            "readable_distance": route.get("readable_distance") if route else None,
+            "readable_duration": route.get("readable_duration") if route else None,
             "geometry": route["geometry"] if route else None,
             "dest_lat": dest_lat,
             "dest_lng": dest_lng,
+            "preference": preference,
         }
     )
 

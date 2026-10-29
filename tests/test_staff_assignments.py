@@ -144,24 +144,32 @@ async def test_cross_staff_forbidden(client, staff_ctx):
 async def test_route_ok(client, staff_ctx, monkeypatch):
     from app.services.geo_service import geo_service
 
-    async def _fake_dir(origin, dest):
-        return {"distance_m": 4200, "duration_s": 600,
-                "geometry": [[88.36, 22.57], [88.40, 22.60]]}
+    async def _fake_dir(origin, dest, *args, **kwargs):
+        pref = kwargs.get("route_preference", "shortest")
+        return {
+            "distance_m": 4200,
+            "duration_s": 600,
+            "readable_distance": "4.2 km",
+            "readable_duration": "10 mins",
+            "geometry": [[88.36, 22.57], [88.40, 22.60]],
+            "route_preference": pref,
+        }
 
     monkeypatch.setattr(geo_service, "directions", _fake_dir)
     a, _ = await _mk_assignment(staff_ctx["staff_id"], staff_ctx["location_id"], csfx="R1")
     resp = await client.get(
-        f"/api/v1/staff-portal/me/assignments/{a.id}/route?lat=22.57&lng=88.36",
+        f"/api/v1/staff-portal/me/assignments/{a.id}/route?lat=22.57&lng=88.36&preference=fastest",
         headers=staff_ctx["headers"])
     assert resp.status_code == 200, resp.text
     data = resp.json()["data"]
     assert data["distance_m"] == 4200 and data["geometry"] is not None
+    assert data["preference"] == "fastest"
 
 
 async def test_route_survives_geo_failure(client, staff_ctx, monkeypatch):
     from app.services.geo_service import geo_service
 
-    async def _fake_dir(origin, dest):
+    async def _fake_dir(origin, dest, *args, **kwargs):
         return None
 
     monkeypatch.setattr(geo_service, "directions", _fake_dir)

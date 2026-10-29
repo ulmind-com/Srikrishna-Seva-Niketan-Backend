@@ -282,9 +282,13 @@ async def create_assignment(
     data.setdefault("customer_rate", customer.billing_rate)
     data.setdefault("employee_payout", employee.daily_rate)
 
-    # Snapshot the destination point so routing stays stable: the customer's
-    # pin if set, else a geocode of the posting/customer address (best-effort).
-    if customer.lat is not None and customer.lng is not None:
+    # Snapshot the destination point so routing stays stable:
+    # 1. Explicit admin pin on the assignment takes first priority
+    # 2. Customer's pinned coords if set
+    # 3. Geocode of the posting / customer address (best-effort)
+    if data.get("dest_lat") is not None and data.get("dest_lng") is not None:
+        pass  # Admin confirmed coordinates supplied in payload
+    elif customer.lat is not None and customer.lng is not None:
         data["dest_lat"], data["dest_lng"] = customer.lat, customer.lng
     else:
         coords = await geo_service.geocode(data.get("address") or customer.address or "")
@@ -341,6 +345,11 @@ async def update_assignment(
     ensure_can_access(actor, existing.location_id)
     data = payload.model_dump(exclude_unset=True)
     data = _apply_duration(data, data.get("start_date") or existing.start_date)
+    # Re-geocode if the posting address changed and no explicit pin was given
+    if "address" in data and "dest_lat" not in data and data["address"] != existing.address:
+        coords = await geo_service.geocode(data["address"] or "")
+        if coords is not None:
+            data["dest_lat"], data["dest_lng"] = coords
     doc = await _assignments.update(assignment_id, data, actor)
 
     # Keep the staff member's availability in sync + tell them about status changes.
