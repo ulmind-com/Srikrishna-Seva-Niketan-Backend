@@ -27,6 +27,7 @@ from app.schemas.assignment import (
 )
 from app.services.crud import CrudService
 from app.services.email_service import email_service
+from app.services.geo_service import geo_service
 from app.services.notification_service import notification_service
 
 logger = logging.getLogger(__name__)
@@ -280,6 +281,15 @@ async def create_assignment(
     # Default rates from the linked records when not explicitly provided.
     data.setdefault("customer_rate", customer.billing_rate)
     data.setdefault("employee_payout", employee.daily_rate)
+
+    # Snapshot the destination point so routing stays stable: the customer's
+    # pin if set, else a geocode of the posting/customer address (best-effort).
+    if customer.lat is not None and customer.lng is not None:
+        data["dest_lat"], data["dest_lng"] = customer.lat, customer.lng
+    else:
+        coords = await geo_service.geocode(data.get("address") or customer.address or "")
+        if coords is not None:
+            data["dest_lat"], data["dest_lng"] = coords
 
     doc = await _assignments.create(data, actor)
 

@@ -16,6 +16,19 @@ from app.dependencies.scoping import ensure_can_access, resolve_create_location
 from app.models.customer import Customer
 from app.schemas.customer import CustomerCreate, CustomerResponse, CustomerUpdate
 from app.services.crud import CrudService
+from app.services.geo_service import geo_service
+
+
+async def _ensure_coords(data: dict) -> None:
+    """Geocode the address into lat/lng when no pin was supplied (best-effort)."""
+    if data.get("lat") is not None and data.get("lng") is not None:
+        return
+    address = data.get("address")
+    if not address:
+        return
+    coords = await geo_service.geocode(address)
+    if coords is not None:
+        data["lat"], data["lng"] = coords
 
 router = APIRouter(prefix="/customers", tags=["Customers"])
 
@@ -76,6 +89,7 @@ async def create_customer(
     data = payload.model_dump(exclude_unset=True)
     data["location_id"] = resolve_create_location(actor, data.get("location_id"))
     data["code"] = await _unique_code()
+    await _ensure_coords(data)
     doc = await _customers.create(data, actor)
     return item_response(CustomerResponse, doc, "Customer registered")
 
@@ -91,6 +105,9 @@ async def update_customer(
     data = payload.model_dump(exclude_unset=True)
     if "location_id" in data and data["location_id"]:
         ensure_can_access(actor, data["location_id"])
+    # Re-geocode when the address changed and no explicit pin was supplied.
+    if "address" in data:
+        await _ensure_coords(data)
     doc = await _customers.update(customer_id, data, actor)
     return item_response(CustomerResponse, doc, "Customer updated")
 

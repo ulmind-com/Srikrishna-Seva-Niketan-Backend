@@ -26,6 +26,8 @@ class CustomerCreate(BaseModel):
     duration_days: Optional[int] = Field(None, ge=0)
     one_to_one: bool = True
     location_id: Optional[str] = None
+    lat: Optional[float] = Field(None, ge=-90, le=90)
+    lng: Optional[float] = Field(None, ge=-180, le=180)
     billing_rate: Optional[int] = Field(None, ge=0)
     notes: Optional[str] = Field(None, max_length=2000)
     is_active: bool = True
@@ -46,6 +48,8 @@ class CustomerUpdate(BaseModel):
     duration_days: Optional[int] = Field(None, ge=0)
     one_to_one: Optional[bool] = None
     location_id: Optional[str] = None
+    lat: Optional[float] = Field(None, ge=-90, le=90)
+    lng: Optional[float] = Field(None, ge=-180, le=180)
     billing_rate: Optional[int] = Field(None, ge=0)
     notes: Optional[str] = Field(None, max_length=2000)
     is_active: Optional[bool] = None
@@ -67,6 +71,8 @@ class CustomerResponse(IdTimestampSchema):
     duration_days: Optional[int] = None
     one_to_one: bool
     location_id: str
+    lat: Optional[float] = None
+    lng: Optional[float] = None
     billing_rate: Optional[int] = None
     notes: Optional[str] = None
     is_active: bool

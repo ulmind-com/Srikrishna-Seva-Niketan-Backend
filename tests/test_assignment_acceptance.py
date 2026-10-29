@@ -39,3 +39,100 @@ def test_admin_response_has_acceptance():
     from app.schemas.assignment import AssignmentResponse
 
     assert "acceptance_status" in AssignmentResponse.model_fields
+
+
+# ---- create-time geocode + destination snapshot -------------------------
+
+
+async def _seed_location_id() -> str:
+    from app.models.location import Location
+
+    loc = await Location.find_one({})
+    return str(loc.id)
+
+
+async def _mk_customer(location_id, **extra):
+    from app.models.customer import Customer
+
+    c = Customer(code=f"CUST-{extra.pop('sfx','A1')}", name="Client", phone="9990001111",
+                 location_id=location_id, **extra)
+    await c.insert()
+    return c
+
+
+async def _mk_employee(location_id, sfx="A1"):
+    from app.models.employee import Employee
+
+    e = Employee(code=f"EMP-{sfx}", name="Nurse", location_id=location_id)
+    await e.insert()
+    return e
+
+
+async def test_create_assignment_uses_customer_pin(client, auth_headers, monkeypatch):
+    from app.services.geo_service import geo_service
+
+    called = {"n": 0}
+
+    async def _fake_geocode(addr):
+        called["n"] += 1
+        return (0.0, 0.0)
+
+    monkeypatch.setattr(geo_service, "geocode", _fake_geocode)
+
+    loc = await _seed_location_id()
+    cust = await _mk_customer(loc, sfx="PIN", lat=22.5, lng=88.3, address="somewhere")
+    emp = await _mk_employee(loc, sfx="PIN")
+
+    resp = await client.post(
+        "/api/v1/assignments",
+        headers=auth_headers,
+        json={"customer_id": str(cust.id), "employee_id": str(emp.id),
+              "start_date": "2026-11-01"},
+    )
+    assert resp.status_code == 201, resp.text
+    data = resp.json()["data"]
+    assert data["dest_lat"] == 22.5 and data["dest_lng"] == 88.3
+    assert called["n"] == 0  # pin present → no geocode
+
+
+async def test_create_assignment_geocodes_when_no_pin(client, auth_headers, monkeypatch):
+    from app.services.geo_service import geo_service
+
+    async def _fake_geocode(addr):
+        return (22.511, 88.311)
+
+    monkeypatch.setattr(geo_service, "geocode", _fake_geocode)
+
+    loc = await _seed_location_id()
+    cust = await _mk_customer(loc, sfx="NOPIN", address="42 Test Rd")
+    emp = await _mk_employee(loc, sfx="NOPIN")
+
+    resp = await client.post(
+        "/api/v1/assignments",
+        headers=auth_headers,
+        json={"customer_id": str(cust.id), "employee_id": str(emp.id),
+              "start_date": "2026-11-01"},
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["data"]["dest_lat"] == 22.511
+
+
+async def test_create_customer_geocodes_address(client, auth_headers, monkeypatch):
+    from app.models.customer import Customer
+    from app.services.geo_service import geo_service
+
+    async def _fake_geocode(addr):
+        return (22.577, 88.366)
+
+    monkeypatch.setattr(geo_service, "geocode", _fake_geocode)
+
+    loc = await _seed_location_id()
+    resp = await client.post(
+        "/api/v1/customers",
+        headers=auth_headers,
+        json={"name": "Pin Client", "phone": "9876500000",
+              "address": "12 Lake Rd", "location_id": loc},
+    )
+    assert resp.status_code == 201, resp.text
+    cust = await Customer.get(resp.json()["data"]["id"])
+    assert cust.lat == 22.577 and cust.lng == 88.366
