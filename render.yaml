@@ -37,6 +37,8 @@ services:
       - key: SMTP_PORT
         value: "587"
       # ---- Secrets / per-environment values — set these in the dashboard ----
+      - key: OLA_MAPS_API_KEY
+        sync: false                  # Ola Maps (Krutrim) server-side key — geocode + directions
       - key: MONGODB_URL
         sync: false                  # mongodb+srv://<user>:<ROTATED_pw>@<cluster>/...
       - key: CLOUDINARY_CLOUD_NAME
