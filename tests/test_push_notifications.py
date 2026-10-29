@@ -149,3 +149,4 @@ async def test_admin_push_dispatch_all_and_employee(client, auth_headers, db, mo
     )
     assert all_res.status_code == 200
     assert all_res.json()["data"]["sent"] >= 1
+

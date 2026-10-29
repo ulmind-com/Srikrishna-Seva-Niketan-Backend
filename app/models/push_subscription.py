@@ -32,3 +32,4 @@ class PushSubscription(TimestampedDocument):
             [("is_active", pymongo.ASCENDING)],
             [("created_at", pymongo.DESCENDING)],
         ]
+

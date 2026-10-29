@@ -17,3 +17,4 @@ async def get_vapid_public_key() -> dict:
         data={"public_key": webpush_service.public_key},
         message="VAPID public key retrieved",
     )
+

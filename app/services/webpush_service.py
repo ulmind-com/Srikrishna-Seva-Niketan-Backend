@@ -248,3 +248,4 @@ class WebPushService:
 
 
 webpush_service = WebPushService()
+

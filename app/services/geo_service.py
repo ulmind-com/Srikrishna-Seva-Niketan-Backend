@@ -13,6 +13,7 @@ Confirm the exact endpoints against Ola's API Documentation before launch.
 from __future__ import annotations
 
 import logging
+import re
 from typing import List, Optional, Tuple
 
 import httpx
@@ -144,12 +145,29 @@ class GeoService:
             poly = route.get("overview_polyline")
             points = poly["points"] if isinstance(poly, dict) else poly
             geometry = _decode_polyline(points) if points else []
+
+            steps = []
+            for st in leg.get("steps", []):
+                instr = (
+                    st.get("instructions")
+                    or st.get("html_instructions")
+                    or st.get("verbal_pre_transition_instruction")
+                )
+                if instr:
+                    clean_instr = re.sub(r"<[^>]+>", "", str(instr)).strip()
+                    steps.append({
+                        "instruction": clean_instr,
+                        "distance_m": int(_scalar(st.get("distance"))),
+                        "maneuver": str(st.get("maneuver") or "straight"),
+                    })
+
             return {
                 "distance_m": distance_m,
                 "duration_s": duration_s,
                 "readable_distance": readable_distance,
                 "readable_duration": readable_duration,
                 "geometry": geometry,
+                "steps": steps,
                 "route_preference": route_preference,
             }
         except Exception:  # noqa: BLE001 — geo failure must never propagate
