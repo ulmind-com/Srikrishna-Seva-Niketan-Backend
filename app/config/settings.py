@@ -55,6 +55,10 @@ class Settings(BaseSettings):
     # ---- Maps (Ola / Krutrim) — server-side only: geocoding + directions ----
     OLA_MAPS_API_KEY: str = ""
 
+    # ---- Vision OCR (Google Gemini) — government-ID extraction, server-side ----
+    GEMINI_API_KEY: str = ""
+    GEMINI_MODEL: str = "gemini-3.8-flash"
+
     # ---- Email (Resend & SMTP) ----
     RESEND_API_KEY: str = ""
     RESEND_FROM_EMAIL: str = "noreply@samiransamanta.in"

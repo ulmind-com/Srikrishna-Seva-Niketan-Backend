@@ -179,3 +179,12 @@ class LocationPing(BaseModel):
 
     lat: float = Field(..., ge=-90, le=90)
     lng: float = Field(..., ge=-180, le=180)
+
+
+class VerifyIdRequest(BaseModel):
+    """Ask the backend to read + verify an uploaded government-ID image."""
+
+    image_url: str
+    id_type: str = Field(..., max_length=40)
+    id_number: str = Field(..., max_length=40)
+    dob: Optional[str] = Field(None, max_length=20)

@@ -29,6 +29,8 @@ import secrets
 import string
 from typing import Optional
 
+import httpx
+
 from fastapi import APIRouter, Depends, File, Form, Query, Request, Response, UploadFile
 
 from app.api.helpers import item_response
@@ -67,6 +69,7 @@ from app.schemas.assignment import StaffAssignmentResponse
 from app.schemas.staff_portal import (
     DeclineRequest,
     LocationPing,
+    VerifyIdRequest,
     SendOtpRequest,
     StaffGoogleAuthRequest,
     StaffLoginRequest,
@@ -78,6 +81,7 @@ from app.schemas.staff_portal import (
 from app.services.cloudinary_service import cloudinary_service
 from app.services.email_service import EmailService
 from app.services.geo_service import geo_service
+from app.services.id_vision_service import id_vision_service, match_id
 from app.utils.files import MAX_IMAGE_BYTES, read_validated_image
 
 router = APIRouter(prefix="/staff-portal", tags=["Staff Portal"])
@@ -690,3 +694,41 @@ async def ping_location(
     staff.touch()
     await staff.save()
     return success_response(data={"ok": True})
+
+
+# ---- Government-ID AI verification (server-side vision) ----
+
+async def _fetch_image(url: str) -> tuple[bytes, str]:
+    """Download the uploaded ID image; empty bytes on any failure."""
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            mime = (resp.headers.get("content-type") or "image/jpeg").split(";")[0]
+            return resp.content, mime
+    except Exception:  # noqa: BLE001 — a fetch failure is just an unreadable doc
+        return b"", "image/jpeg"
+
+
+@router.post("/me/verify-id", summary="AI-verify an uploaded government ID")
+async def verify_id(
+    payload: VerifyIdRequest,
+    staff: Employee = Depends(get_current_staff),
+) -> dict:
+    """Read the uploaded ID with the vision model and match name + DOB + number.
+
+    Advisory-free hard check lives in the client gate; here we just return the
+    structured match result. The key never leaves the server.
+    """
+    img, mime = await _fetch_image(payload.image_url)
+    extracted = await id_vision_service.extract(img, mime)
+    if extracted is None:
+        extracted = {"readable": False, "is_government_id": False}
+    result = match_id(
+        extracted,
+        name=staff.name,
+        id_number=payload.id_number,
+        dob=payload.dob or "",
+        id_type=payload.id_type,
+    )
+    return success_response(data=result)

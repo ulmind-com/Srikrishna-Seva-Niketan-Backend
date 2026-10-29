@@ -39,6 +39,8 @@ services:
       # ---- Secrets / per-environment values — set these in the dashboard ----
       - key: OLA_MAPS_API_KEY
         sync: false                  # Ola Maps (Krutrim) server-side key — geocode + directions
+      - key: GEMINI_API_KEY
+        sync: false                  # Google Gemini vision key — government-ID OCR extraction
       - key: MONGODB_URL
         sync: false                  # mongodb+srv://<user>:<ROTATED_pw>@<cluster>/...
       - key: CLOUDINARY_CLOUD_NAME
