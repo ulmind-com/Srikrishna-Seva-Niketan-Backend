@@ -23,6 +23,11 @@ class Customer(TimestampedDocument):
     city: Optional[str] = None
     pincode: Optional[str] = None
 
+    # Map coordinates — set by an admin pin, else geocoded from the address
+    # on create/update and cached. Used to route the assigned nurse here.
+    lat: Optional[float] = None
+    lng: Optional[float] = None
+
     id_proof: Optional[ImageAsset] = None
     id_proof_type: Optional[str] = None
     id_proof_number: Optional[str] = None

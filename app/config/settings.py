@@ -52,6 +52,9 @@ class Settings(BaseSettings):
     CLOUDINARY_API_SECRET: str = ""
     CLOUDINARY_URL: str = ""
 
+    # ---- Maps (Ola / Krutrim) — server-side only: geocoding + directions ----
+    OLA_MAPS_API_KEY: str = ""
+
     # ---- Email (Resend & SMTP) ----
     RESEND_API_KEY: str = ""
     RESEND_FROM_EMAIL: str = "noreply@samiransamanta.in"

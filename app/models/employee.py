@@ -54,6 +54,12 @@ class Employee(TimestampedDocument):
 
     status: EmployeeStatus = EmployeeStatus.AVAILABLE
     rating: float = Field(default=5.0, ge=1.0, le=5.0)
+
+    # Last known GPS, captured when the nurse opens a duty route in the portal.
+    # Enables a future admin "live staff map"; written only to the nurse's own record.
+    last_lat: Optional[float] = None
+    last_lng: Optional[float] = None
+    located_at: Optional[dt.datetime] = None
     daily_rate: Optional[int] = None  # payout to the staff member (expense)
     join_date: Optional[dt.date] = None
     notes: Optional[str] = None

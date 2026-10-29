@@ -10,7 +10,12 @@ from beanie import Indexed
 from pydantic import Field
 
 from app.models.base import TimestampedDocument
-from app.models.enums import AssignmentPlace, AssignmentStatus, ShiftType
+from app.models.enums import (
+    AcceptanceStatus,
+    AssignmentPlace,
+    AssignmentStatus,
+    ShiftType,
+)
 
 
 class Assignment(TimestampedDocument):
@@ -36,6 +41,18 @@ class Assignment(TimestampedDocument):
 
     status: AssignmentStatus = AssignmentStatus.SCHEDULED
 
+    # Nurse's response to the posting (rings in the staff portal until answered).
+    acceptance_status: AcceptanceStatus = AcceptanceStatus.PENDING
+    accepted_at: Optional[dt.datetime] = None
+    declined_at: Optional[dt.datetime] = None
+    decline_reason: Optional[str] = None
+
+    # Destination point, snapshotted at create from the customer's pin or a
+    # geocode of the address — so routing stays stable even if the customer
+    # record is edited later.
+    dest_lat: Optional[float] = None
+    dest_lng: Optional[float] = None
+
     customer_rate: Optional[int] = None  # contract value — revenue for this engagement
     employee_payout: Optional[int] = None  # paid to the staff member — an expense
     other_expense: Optional[int] = None  # misc cost for this engagement (travel, kit…)
@@ -49,6 +66,7 @@ class Assignment(TimestampedDocument):
             [("customer_id", pymongo.ASCENDING)],
             [("employee_id", pymongo.ASCENDING)],
             [("status", pymongo.ASCENDING)],
+            [("acceptance_status", pymongo.ASCENDING)],
             [("start_date", pymongo.DESCENDING)],
             [("created_at", pymongo.DESCENDING)],
         ]

@@ -158,6 +158,14 @@ class AssignmentStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+class AcceptanceStatus(StrEnum):
+    """Whether the assigned nurse has responded to a posting."""
+
+    PENDING = "pending"  # assigned, nurse has not responded — rings in the portal
+    ACCEPTED = "accepted"
+    DECLINED = "declined"
+
+
 class PaymentStatus(StrEnum):
     """Payment state for a customer billing record."""
 
