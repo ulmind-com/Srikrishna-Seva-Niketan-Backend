@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 from typing import List, Optional, Tuple
 
 from app.core.exceptions import NotFoundException
+from app.core.logging import get_logger
 from app.models.enums import NotificationType
 from app.models.notification import Notification
 from app.repositories.base import BaseRepository
+from app.services.webpush_service import webpush_service
+
+logger = get_logger(__name__)
 
 
 class NotificationService:
@@ -43,7 +48,27 @@ class NotificationService:
             link=link,
             reference_id=reference_id,
         )
-        return await self.repo.create(notification)
+        created = await self.repo.create(notification)
+
+        if employee_id:
+            try:
+                # Dispatch background web push to registered nurse devices
+                asyncio.create_task(
+                    webpush_service.send_to_employee(
+                        employee_id=employee_id,
+                        title=title,
+                        message=message,
+                        url=link or "/staff/status",
+                        data={"reference_id": reference_id, "type": type.value},
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Background webpush trigger caught exception",
+                    extra={"error": str(exc), "employee_id": employee_id},
+                )
+
+        return created
 
     async def paginate(
         self,

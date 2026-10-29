@@ -72,6 +72,11 @@ class Settings(BaseSettings):
     SMTP_SSL: bool = False
     ADMIN_NOTIFICATION_EMAIL: str = ""
 
+    # ---- Web Push Notifications (VAPID / RFC 8292) ----
+    VAPID_PUBLIC_KEY: str = "BPr0MfGBuiqiXkN6GO9dGf-pl4abmE3azCXLdRrGNGjlt-fhR0ML1SfE9pMj14aq7dJL8qp8nrCgnpE0xF_UojA"
+    VAPID_PRIVATE_KEY: str = "-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgPMCRX5GOwKMj8Z6z\n+kAz8/O7aq5u+5i8qtSwNtP+I5mhRANCAAT69DHxgboqol5DehjvXRn/qZeGm5hN\n2swly3UaxjRo5bfn4UdDC9UnxPaTI9eGqu3SS/KqfJ6woJ6RNMRf1KIw\n-----END PRIVATE KEY-----\n"
+    VAPID_CLAIM_EMAIL: str = "admin@shrikrishnanursing.com"
+
     # ---- Daily report scheduler ----
     ENABLE_SCHEDULER: bool = True
     REPORT_TIMEZONE: str = "Asia/Kolkata"

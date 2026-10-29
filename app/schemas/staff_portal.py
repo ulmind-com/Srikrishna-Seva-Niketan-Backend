@@ -188,3 +188,24 @@ class VerifyIdRequest(BaseModel):
     id_type: str = Field(..., max_length=40)
     id_number: str = Field(..., max_length=40)
     dob: Optional[str] = Field(None, max_length=20)
+
+
+class PushSubscriptionKeys(BaseModel):
+    """P-256 and auth keys from PushSubscription JSON."""
+
+    p256dh: str
+    auth: str
+
+
+class PushSubscriptionRequest(BaseModel):
+    """Staff device registration for browser push notifications."""
+
+    endpoint: str
+    keys: PushSubscriptionKeys
+    user_agent: Optional[str] = None
+
+
+class PushUnsubscribeRequest(BaseModel):
+    """Unregister a staff device from push notifications."""
+
+    endpoint: str

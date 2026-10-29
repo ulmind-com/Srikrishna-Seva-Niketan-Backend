@@ -19,6 +19,7 @@ from app.api.v1.infection_control.router import router as infection_control_rout
 from app.api.v1.locations.router import router as locations_router
 from app.api.v1.notifications.router import router as notifications_router
 from app.api.v1.payments.router import router as payments_router
+from app.api.v1.push.router import router as push_router
 from app.api.v1.reports.router import router as reports_router
 from app.api.v1.reviews.router import router as reviews_router
 from app.api.v1.search.router import router as search_router
@@ -58,6 +59,7 @@ api_router.include_router(assignments_router)
 api_router.include_router(expenses_router)
 api_router.include_router(payments_router)
 api_router.include_router(reports_router)
+api_router.include_router(push_router)
 api_router.include_router(notifications_router)
 api_router.include_router(uploads_router)
 api_router.include_router(search_router)

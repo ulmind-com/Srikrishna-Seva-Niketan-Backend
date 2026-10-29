@@ -69,6 +69,8 @@ from app.schemas.assignment import StaffAssignmentResponse
 from app.schemas.staff_portal import (
     DeclineRequest,
     LocationPing,
+    PushSubscriptionRequest,
+    PushUnsubscribeRequest,
     VerifyIdRequest,
     SendOtpRequest,
     StaffGoogleAuthRequest,
@@ -82,6 +84,7 @@ from app.services.cloudinary_service import cloudinary_service
 from app.services.email_service import EmailService
 from app.services.geo_service import geo_service
 from app.services.id_vision_service import id_vision_service, match_id
+from app.services.webpush_service import webpush_service
 from app.utils.files import MAX_IMAGE_BYTES, read_validated_image
 
 router = APIRouter(prefix="/staff-portal", tags=["Staff Portal"])
@@ -548,6 +551,68 @@ async def mark_all_my_notifications_read(
 ) -> dict:
     updated = await notification_service.mark_all_read_for_employee(str(staff.id))
     return success_response(data={"updated": updated})
+
+
+# ---- Web Push Notifications ----
+
+
+@router.post("/me/push-subscription", summary="Register staff push subscription")
+async def register_push_subscription(
+    payload: PushSubscriptionRequest,
+    request: Request,
+    staff: Employee = Depends(get_current_staff),
+) -> dict:
+    ua = payload.user_agent or request.headers.get("user-agent")
+    sub = await webpush_service.register_subscription(
+        endpoint=payload.endpoint,
+        p256dh=payload.keys.p256dh,
+        auth=payload.keys.auth,
+        employee_id=str(staff.id),
+        user_agent=ua,
+    )
+    return success_response(
+        data={"id": str(sub.id), "is_active": sub.is_active},
+        message="Push notifications registered successfully",
+    )
+
+
+@router.delete("/me/push-subscription", summary="Unregister staff push subscription")
+async def unregister_push_subscription(
+    payload: PushUnsubscribeRequest,
+    staff: Employee = Depends(get_current_staff),
+) -> dict:
+    ok = await webpush_service.unregister_subscription(
+        endpoint=payload.endpoint,
+        employee_id=str(staff.id),
+    )
+    return success_response(
+        data={"unregistered": ok},
+        message="Push notifications unregistered",
+    )
+
+
+@router.post("/me/push-test", summary="Send test push alert to nurse device")
+async def test_my_push_notification(
+    staff: Employee = Depends(get_current_staff),
+) -> dict:
+    res = await webpush_service.send_to_employee(
+        employee_id=str(staff.id),
+        title="🔔 Duty Alert: Test Succeeded!",
+        message="Web Push is live on this device! You will receive instant notifications for new duty assignments.",
+        url="/staff/status",
+        urgency="high",
+    )
+    await notification_service.create(
+        title="🔔 Device Push Verified",
+        message="Your device is properly subscribed and ready for real-time duty alerts.",
+        type=NotificationType.SYSTEM,
+        employee_id=str(staff.id),
+        link="/staff/status",
+    )
+    return success_response(
+        data=res,
+        message="Test alert sent to your device",
+    )
 
 
 # ---- Duties (the nurse's own assignments: respond + route) ----

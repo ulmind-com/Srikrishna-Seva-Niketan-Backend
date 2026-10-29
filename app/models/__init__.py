@@ -20,6 +20,7 @@ from app.models.email_otp import EmailOtp
 from app.models.infection_control import InfectionControlEnquiry, InfectionControlPageContent
 from app.models.location import Location
 from app.models.notification import Notification
+from app.models.push_subscription import PushSubscription
 from app.models.rbac import Permission, Role
 from app.models.service import Category, Service
 from app.models.settings import SEOSettings, SocialLinks, WebsiteSettings
@@ -57,6 +58,7 @@ ALL_DOCUMENT_MODELS = [
     SEOSettings,
     SocialLinks,
     Notification,
+    PushSubscription,
     ActivityLog,
     InfectionControlPageContent,
     InfectionControlEnquiry,
@@ -97,6 +99,7 @@ __all__ = [
     "SEOSettings",
     "SocialLinks",
     "Notification",
+    "PushSubscription",
     "ActivityLog",
     "InfectionControlPageContent",
     "InfectionControlEnquiry",
