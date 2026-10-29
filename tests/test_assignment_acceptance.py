@@ -136,3 +136,25 @@ async def test_create_customer_geocodes_address(client, auth_headers, monkeypatc
     assert resp.status_code == 201, resp.text
     cust = await Customer.get(resp.json()["data"]["id"])
     assert cust.lat == 22.577 and cust.lng == 88.366
+
+
+async def test_backfill_marks_existing_accepted(db):
+    import sys
+    from pathlib import Path
+
+    from app.models.assignment import Assignment
+    from app.models.enums import AcceptanceStatus
+
+    loc = await _seed_location_id()
+    for i in (1, 2):
+        a = Assignment(customer_id=f"c{i}", customer_name="C", employee_id=f"e{i}",
+                       employee_name="E", location_id=loc, start_date=dt.date(2026, 1, 1))
+        await a.insert()
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    from backfill_acceptance import backfill
+
+    count = await backfill()
+    assert count >= 2
+    for a in await Assignment.find({}).to_list():
+        assert a.acceptance_status == AcceptanceStatus.ACCEPTED
