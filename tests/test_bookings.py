@@ -56,3 +56,21 @@ async def test_booking_validation_error(client):
     assert resp.status_code == 422
     assert resp.json()["success"] is False
     assert isinstance(resp.json()["errors"], list)
+
+
+async def test_convert_booking_to_customer(client, auth_headers, booking_payload):
+    created = await client.post("/api/v1/bookings", json=booking_payload)
+    booking_id = created.json()["data"]["id"]
+
+    res = await client.post(
+        f"/api/v1/bookings/{booking_id}/convert-to-customer",
+        headers=auth_headers,
+    )
+    assert res.status_code == 200
+    data = res.json()["data"]
+    assert "customer" in data
+    assert data["customer"]["name"] == booking_payload["patient_name"]
+    assert data["customer"]["phone"] == booking_payload["contact_phone"]
+    assert data["customer"]["code"].startswith("CUST-")
+    assert data["booking"]["customer_id"] == data["customer"]["id"]
+    assert data["booking"]["status"] == "approved"

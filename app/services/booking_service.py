@@ -4,14 +4,20 @@ from __future__ import annotations
 
 import csv
 import io
+import secrets
+import string
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.core.exceptions import BadRequestException, NotFoundException
 from app.dependencies.auth import ActorContext
+from app.dependencies.scoping import resolve_create_location
 from app.models.booking import Booking
-from app.models.enums import ActivityAction, BookingStatus, NotificationType
+from app.models.customer import Customer
+from app.models.location import Location
+from app.models.enums import ActivityAction, BookingStatus, CareType, NotificationType
 from app.repositories.base import BaseRepository
 from app.services.activity_service import activity_service
+from app.services.geo_service import geo_service
 from app.services.notification_service import notification_service
 from app.utils.references import generate_reference
 
@@ -173,6 +179,103 @@ class BookingService:
             entity_id=str(booking.id), description=desc,
             ip_address=actor.ip_address, user_agent=actor.user_agent,
         )
+
+    async def convert_to_customer(
+        self, booking_id: str, actor: ActorContext, location_id: Optional[str] = None
+    ) -> Tuple[Customer, Booking]:
+        """Convert a service booking into a formal Customer record for nurse assignment."""
+        booking = await self.get_or_404(booking_id)
+
+        customer = None
+        if booking.customer_id:
+            customer = await Customer.get(booking.customer_id)
+
+        if customer is None:
+            # Check by phone to prevent duplicates
+            customer = await Customer.find_one({"phone": booking.contact_phone})
+
+        if customer is None:
+            resolved_loc: Optional[str] = None
+            if location_id:
+                resolved_loc = resolve_create_location(actor, location_id)
+            elif actor.is_scoped and actor.location_ids:
+                resolved_loc = actor.location_ids[0]
+            else:
+                if booking.city:
+                    match_loc = await Location.find_one(
+                        {"city": {"$regex": f"^{booking.city}$", "$options": "i"}, "is_active": True}
+                    )
+                    if match_loc:
+                        resolved_loc = str(match_loc.id)
+                if not resolved_loc:
+                    first_loc = await Location.find_one({"is_active": True})
+                    if first_loc:
+                        resolved_loc = str(first_loc.id)
+                if not resolved_loc:
+                    resolved_loc = resolve_create_location(actor, location_id)
+
+            code = await _unique_customer_code()
+
+            lat = None
+            lng = None
+            if booking.address:
+                coords = await geo_service.geocode(booking.address)
+                if coords:
+                    lat, lng = coords
+
+            customer = Customer(
+                code=code,
+                name=booking.patient_name,
+                phone=booking.contact_phone,
+                alt_phone=booking.whatsapp_number or booking.emergency_contact_phone,
+                address=booking.address,
+                city=booking.city,
+                pincode=booking.pincode,
+                lat=lat,
+                lng=lng,
+                care_type=CareType.HOME,
+                service_label=booking.service_name,
+                location_id=resolved_loc,
+                notes=f"Converted from Booking #{booking.reference}. Care required: {booking.care_required or 'N/A'}",
+                is_active=True,
+            )
+            await customer.insert()
+            await activity_service.log(
+                ActivityAction.CREATE,
+                "customers",
+                user_id=actor.user_id,
+                user_email=actor.email,
+                entity_id=str(customer.id),
+                description=f"Created customer {customer.name} ({customer.code}) from booking {booking.reference}",
+                ip_address=actor.ip_address,
+                user_agent=actor.user_agent,
+            )
+
+        booking.customer_id = str(customer.id)
+        if booking.status == BookingStatus.PENDING:
+            booking.status = BookingStatus.APPROVED
+        booking.touch()
+        await booking.save()
+
+        await self._audit(
+            ActivityAction.UPDATE,
+            booking,
+            actor,
+            f"Linked booking to customer {customer.code}",
+        )
+
+        return customer, booking
+
+
+_ALPHABET = string.ascii_uppercase + string.digits
+
+
+async def _unique_customer_code() -> str:
+    for _ in range(10):
+        code = "CUST-" + "".join(secrets.choice(_ALPHABET) for _ in range(6))
+        if await Customer.find_one({"code": code}) is None:
+            return code
+    return "CUST-" + secrets.token_hex(4).upper()
 
 
 booking_service = BookingService()

@@ -21,6 +21,8 @@ from app.schemas.booking import (
     BookingStatusUpdate,
     BookingUpdate,
 )
+from app.schemas.customer import CustomerResponse
+from pydantic import BaseModel
 from app.services.booking_service import booking_service
 from app.services.email_service import email_service
 
@@ -148,6 +150,30 @@ async def assign_booking(
         booking_id, payload.assigned_staff_id, payload.assigned_staff_name, actor
     )
     return item_response(BookingResponse, booking, "Staff assigned")
+
+
+class ConvertToCustomerRequest(BaseModel):
+    location_id: Optional[str] = None
+
+
+@router.post("/{booking_id}/convert-to-customer", summary="Convert booking to formal Customer record")
+async def convert_booking_to_customer(
+    booking_id: str,
+    payload: Optional[ConvertToCustomerRequest] = None,
+    actor: ActorContext = Depends(require_permission("bookings", "update")),
+) -> dict:
+    """Create or link a Customer document from booking details and approve the booking."""
+    location_id = payload.location_id if payload else None
+    customer, booking = await booking_service.convert_to_customer(
+        booking_id, actor, location_id=location_id
+    )
+    return success_response(
+        data={
+            "customer": CustomerResponse.model_validate(customer).model_dump(mode="json"),
+            "booking": BookingResponse.model_validate(booking).model_dump(mode="json"),
+        },
+        message=f"Added as customer: {customer.name} ({customer.code})",
+    )
 
 
 @router.delete("/{booking_id}", summary="Delete booking")

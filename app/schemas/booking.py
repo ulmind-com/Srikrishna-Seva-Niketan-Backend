@@ -99,3 +99,4 @@ class BookingResponse(IdTimestampSchema):
     admin_notes: Optional[str] = None
     message: Optional[str] = None
     source: Optional[str] = None
+    customer_id: Optional[str] = None
