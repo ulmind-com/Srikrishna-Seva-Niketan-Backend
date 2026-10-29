@@ -253,3 +253,140 @@ async def daily_summary(scope: Dict[str, Any], on: Optional[dt.date] = None) -> 
         "vacancies": available,
         "status_breakdown": dict(status_counts),
     }
+
+
+async def duty_report(
+    scope: Dict[str, Any],
+    start: Optional[dt.date] = None,
+    end: Optional[dt.date] = None,
+    payment_type: Optional[str] = None,
+    status: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Comprehensive duty & financial report.
+
+    Details:
+      - Which client took service on which date and duration
+      - Who (nurse / staff member) delivered the service
+      - Payment type: prepaid vs postpaid
+      - Client billing amount, staff payout, expenses, and net company profit
+      - Work completion & payment collection tracking
+    """
+    from app.models.location import Location
+
+    date_rng = _date_bounds(start, end)
+    query_filter: Dict[str, Any] = _merge(
+        scope, {"start_date": date_rng} if date_rng else None
+    )
+    if payment_type and payment_type.lower() != "all":
+        query_filter["payment_type"] = payment_type.lower()
+    if status and status.lower() != "all":
+        query_filter["status"] = status.lower()
+
+    assignments = await Assignment.find(query_filter).sort("-start_date", "-created_at").to_list()
+
+    customers = await Customer.find(_merge(scope)).to_list()
+    cust_map = {str(c.id): c for c in customers}
+
+    employees = await Employee.find(_merge(scope)).to_list()
+    emp_map = {str(e.id): e for e in employees}
+
+    locations = await Location.find({"is_active": True}).to_list()
+    loc_map = {str(l.id): l.name for l in locations}
+
+    total_billed = 0
+    total_staff_payout = 0
+    total_expenses = 0
+    total_profit = 0
+
+    prepaid_count = 0
+    prepaid_total = 0
+    postpaid_count = 0
+    postpaid_total = 0
+    postpaid_collected = 0
+    postpaid_pending = 0
+
+    items = []
+    for a in assignments:
+        cust = cust_map.get(a.customer_id)
+        emp = emp_map.get(a.employee_id)
+
+        bill = a.customer_rate or 0
+        payout = a.employee_payout or 0
+        exp = a.other_expense or 0
+        profit = bill - payout - exp
+        margin = round(profit / bill * 100) if bill > 0 else 0
+
+        ptype = str(getattr(a, "payment_type", "prepaid"))
+        pstatus = str(getattr(a, "payment_status", "pending"))
+
+        if a.status != AssignmentStatus.CANCELLED:
+            total_billed += bill
+            total_staff_payout += payout
+            total_expenses += exp
+            total_profit += profit
+
+            if ptype == "postpaid":
+                postpaid_count += 1
+                postpaid_total += bill
+                if pstatus in ("paid", "received"):
+                    postpaid_collected += bill
+                else:
+                    postpaid_pending += bill
+            else:
+                prepaid_count += 1
+                prepaid_total += bill
+
+        duration_days = (
+            (a.end_date - a.start_date).days + 1
+            if a.end_date
+            else None
+        )
+
+        items.append({
+            "id": str(a.id),
+            "start_date": a.start_date.isoformat(),
+            "end_date": a.end_date.isoformat() if a.end_date else None,
+            "duration_days": duration_days,
+            "customer_id": a.customer_id,
+            "customer_name": a.customer_name,
+            "customer_phone": cust.phone if cust else None,
+            "employee_id": a.employee_id,
+            "employee_name": a.employee_name,
+            "employee_code": emp.code if emp else None,
+            "shift": str(a.shift),
+            "place_type": str(a.place_type),
+            "place_name": a.place_name,
+            "address": a.address or (cust.address if cust else None),
+            "payment_type": ptype,
+            "payment_status": pstatus,
+            "customer_rate": bill,
+            "employee_payout": payout,
+            "other_expense": exp,
+            "profit": profit,
+            "margin_pct": margin,
+            "status": str(a.status),
+            "acceptance_status": str(a.acceptance_status),
+            "work_completed_at": a.work_completed_at.isoformat() if a.work_completed_at else None,
+            "payment_received_at": a.payment_received_at.isoformat() if a.payment_received_at else None,
+            "payment_received_by": a.payment_received_by,
+            "location_id": a.location_id,
+            "location_name": loc_map.get(a.location_id, "Branch"),
+        })
+
+    return {
+        "summary": {
+            "total_duties": len(items),
+            "total_billed": total_billed,
+            "total_staff_payout": total_staff_payout,
+            "total_expenses": total_expenses,
+            "total_profit": total_profit,
+            "overall_margin_pct": round(total_profit / total_billed * 100) if total_billed > 0 else 0,
+            "prepaid_count": prepaid_count,
+            "prepaid_total": prepaid_total,
+            "postpaid_count": postpaid_count,
+            "postpaid_total": postpaid_total,
+            "postpaid_collected": postpaid_collected,
+            "postpaid_pending": postpaid_pending,
+        },
+        "items": items,
+    }

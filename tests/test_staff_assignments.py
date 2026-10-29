@@ -54,7 +54,9 @@ async def _mk_assignment(employee_id, location_id, **extra):
         employee_id=employee_id, employee_name="Nurse A",
         location_id=location_id, start_date=dt.date(2026, 11, 1),
         acceptance_status=extra.pop("acceptance", AcceptanceStatus.PENDING),
-        dest_lat=22.60, dest_lng=88.40, customer_rate=5000, employee_payout=800,
+        dest_lat=22.60, dest_lng=88.40,
+        customer_rate=extra.pop("customer_rate", 5000),
+        employee_payout=extra.pop("employee_payout", 800),
         **extra,
     )
     await a.insert()
@@ -190,3 +192,58 @@ async def test_location_ping_persists(client, staff_ctx):
     assert resp.status_code == 200, resp.text
     emp = await Employee.get(staff_ctx["staff_id"])
     assert emp.last_lat == 22.58 and emp.last_lng == 88.37
+
+
+async def test_complete_assignment_prepaid(client, staff_ctx):
+    from app.models.assignment import Assignment
+    from app.models.employee import Employee
+    from app.models.enums import AssignmentStatus, EmployeeStatus
+
+    a, _ = await _mk_assignment(staff_ctx["staff_id"], staff_ctx["location_id"], csfx="CP1", payment_type="prepaid")
+    resp = await client.post(
+        f"/api/v1/staff-portal/me/assignments/{a.id}/complete",
+        headers=staff_ctx["headers"],
+        json={},
+    )
+    assert resp.status_code == 200, resp.text
+    doc = await Assignment.get(a.id)
+    assert doc.status == AssignmentStatus.COMPLETED
+    assert doc.work_completed_at is not None
+
+    emp = await Employee.get(staff_ctx["staff_id"])
+    assert emp.status == EmployeeStatus.AVAILABLE
+
+
+async def test_complete_assignment_postpaid(client, staff_ctx):
+    from app.models.assignment import Assignment
+    from app.models.employee import Employee
+    from app.models.enums import AssignmentStatus, EmployeeStatus, PaymentStatus
+    from app.models.finance import Payment
+
+    a, _ = await _mk_assignment(
+        staff_ctx["staff_id"],
+        staff_ctx["location_id"],
+        csfx="CP2",
+        payment_type="postpaid",
+        customer_rate=4500,
+    )
+    resp = await client.post(
+        f"/api/v1/staff-portal/me/assignments/{a.id}/complete",
+        headers=staff_ctx["headers"],
+        json={"cash_collected": True},
+    )
+    assert resp.status_code == 200, resp.text
+    doc = await Assignment.get(a.id)
+    assert doc.status == AssignmentStatus.COMPLETED
+    assert doc.payment_status == PaymentStatus.PAID
+    assert doc.payment_received_at is not None
+    assert "In-hand Cash" in (doc.payment_received_by or "")
+
+    emp = await Employee.get(staff_ctx["staff_id"])
+    assert emp.status == EmployeeStatus.AVAILABLE
+
+    # Payment document inserted
+    pay = await Payment.find_one({"customer_id": doc.customer_id})
+    assert pay is not None
+    assert pay.amount == 4500
+    assert pay.status == PaymentStatus.PAID

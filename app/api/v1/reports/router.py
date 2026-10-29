@@ -60,6 +60,25 @@ async def report_daily_summary(
     return success_response(data=data)
 
 
+@router.get("/duties", summary="Comprehensive duty and payment details report")
+async def report_duties(
+    start: Optional[dt.date] = Query(None),
+    end: Optional[dt.date] = Query(None),
+    payment_type: Optional[str] = Query(None),
+    status: Optional[str] = Query(None),
+    location_id: Optional[str] = Query(None),
+    actor: ActorContext = Depends(require_permission("reports", "view")),
+) -> dict:
+    data = await report_service.duty_report(
+        _effective_scope(actor, location_id),
+        start=start,
+        end=end,
+        payment_type=payment_type,
+        status=status,
+    )
+    return success_response(data=data)
+
+
 @router.post("/daily-email", summary="Send today's daily report email now")
 async def send_daily_email_now(
     actor: ActorContext = Depends(require_permission("reports", "view")),

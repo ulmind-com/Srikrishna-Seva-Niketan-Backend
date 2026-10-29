@@ -11,6 +11,8 @@ from app.models.enums import (
     AcceptanceStatus,
     AssignmentPlace,
     AssignmentStatus,
+    PaymentStatus,
+    PaymentType,
     ShiftType,
 )
 from app.schemas.common import IdTimestampSchema
@@ -29,6 +31,8 @@ class AssignmentCreate(BaseModel):
     # without an explicit end_date the router derives end_date from it.
     duration_days: Optional[int] = Field(None, ge=1, le=3650)
     status: AssignmentStatus = AssignmentStatus.SCHEDULED
+    payment_type: Optional[PaymentType] = PaymentType.PREPAID
+    payment_status: Optional[PaymentStatus] = PaymentStatus.PENDING
     customer_rate: Optional[int] = Field(None, ge=0)
     employee_payout: Optional[int] = Field(None, ge=0)
     other_expense: Optional[int] = Field(None, ge=0)
@@ -48,6 +52,11 @@ class AssignmentUpdate(BaseModel):
     end_date: Optional[dt.date] = None
     duration_days: Optional[int] = Field(None, ge=1, le=3650)
     status: Optional[AssignmentStatus] = None
+    payment_type: Optional[PaymentType] = None
+    payment_status: Optional[PaymentStatus] = None
+    payment_received_at: Optional[dt.datetime] = None
+    payment_received_by: Optional[str] = None
+    work_completed_at: Optional[dt.datetime] = None
     customer_rate: Optional[int] = Field(None, ge=0)
     employee_payout: Optional[int] = Field(None, ge=0)
     other_expense: Optional[int] = Field(None, ge=0)
@@ -69,6 +78,11 @@ class AssignmentResponse(IdTimestampSchema):
     start_date: dt.date
     end_date: Optional[dt.date] = None
     status: AssignmentStatus
+    payment_type: PaymentType = PaymentType.PREPAID
+    payment_status: PaymentStatus = PaymentStatus.PENDING
+    payment_received_at: Optional[dt.datetime] = None
+    payment_received_by: Optional[str] = None
+    work_completed_at: Optional[dt.datetime] = None
     acceptance_status: AcceptanceStatus = AcceptanceStatus.PENDING
     accepted_at: Optional[dt.datetime] = None
     declined_at: Optional[dt.datetime] = None
@@ -138,6 +152,11 @@ class StaffAssignmentResponse(IdTimestampSchema):
     start_date: dt.date
     end_date: Optional[dt.date] = None
     acceptance_status: AcceptanceStatus
+    status: AssignmentStatus = AssignmentStatus.SCHEDULED
+    payment_type: PaymentType = PaymentType.PREPAID
+    payment_status: PaymentStatus = PaymentStatus.PENDING
+    collect_amount: Optional[int] = None
+    work_completed_at: Optional[dt.datetime] = None
     dest_lat: Optional[float] = None
     dest_lng: Optional[float] = None
 

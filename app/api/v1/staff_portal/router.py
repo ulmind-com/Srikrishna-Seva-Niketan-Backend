@@ -29,6 +29,7 @@ import secrets
 import string
 from typing import Optional
 
+from pydantic import BaseModel
 import httpx
 
 from fastapi import APIRouter, Depends, File, Form, Query, Request, Response, UploadFile
@@ -60,8 +61,11 @@ from app.models.email_otp import EmailOtp
 from app.models.employee import Employee
 from app.models.enums import (
     AcceptanceStatus,
+    AssignmentStatus,
     EmployeeStatus,
     NotificationType,
+    PaymentMode,
+    PaymentStatus,
     StaffVerificationStatus,
 )
 from app.models.location import Location
@@ -641,6 +645,18 @@ async def _own_assignment(assignment_id: str, staff: Employee) -> Assignment:
 async def _staff_item(a: Assignment, phone: Optional[str]) -> dict:
     item = StaffAssignmentResponse.model_validate(a).model_dump(mode="json")
     item["customer_phone"] = phone
+    ptype = str(getattr(a, "payment_type", "prepaid"))
+    pstatus = str(getattr(a, "payment_status", "pending"))
+    item["payment_type"] = ptype
+    item["payment_status"] = pstatus
+    item["status"] = str(a.status)
+    item["work_completed_at"] = (
+        a.work_completed_at.isoformat() if a.work_completed_at else None
+    )
+    if ptype == "postpaid":
+        item["collect_amount"] = a.customer_rate
+    else:
+        item["collect_amount"] = None
     return item
 
 
@@ -718,6 +734,81 @@ async def decline_assignment(
     )
     return success_response(
         data=await _staff_item(a, await _customer_phone(a)), message="Duty declined"
+    )
+
+
+class CompleteDutyPayload(BaseModel):
+    cash_collected: Optional[bool] = False
+    notes: Optional[str] = None
+
+
+@router.post(
+    "/me/assignments/{assignment_id}/complete",
+    summary="Mark duty completed and record payment if postpaid",
+)
+async def complete_assignment(
+    assignment_id: str,
+    payload: CompleteDutyPayload = CompleteDutyPayload(),
+    staff: Employee = Depends(get_current_staff),
+) -> dict:
+    a = await _own_assignment(assignment_id, staff)
+
+    now = dt.datetime.now(dt.timezone.utc)
+    a.status = AssignmentStatus.COMPLETED
+    a.work_completed_at = now
+
+    ptype = str(getattr(a, "payment_type", "prepaid"))
+    if ptype == "postpaid" or payload.cash_collected:
+        a.payment_status = PaymentStatus.PAID
+        a.payment_received_at = now
+        a.payment_received_by = f"Staff: {staff.name} (In-hand Cash)"
+
+        if a.customer_rate and a.customer_rate > 0:
+            try:
+                from app.models.finance import Payment
+
+                pay = Payment(
+                    customer_id=a.customer_id,
+                    customer_name=a.customer_name,
+                    assignment_id=str(a.id),
+                    location_id=a.location_id,
+                    amount=a.customer_rate,
+                    mode=PaymentMode.CASH,
+                    status=PaymentStatus.PAID,
+                    date=now.date(),
+                    note=f"Cash collected in-hand by staff member {staff.name} upon duty completion.",
+                )
+                await pay.insert()
+            except Exception as e:
+                import logging
+                logging.getLogger("app").exception("Payment insert error: %s", e)
+
+    a.touch()
+    await a.save()
+
+    # Free staff availability for next assignment
+    staff.status = EmployeeStatus.AVAILABLE
+    staff.touch()
+    await staff.save()
+
+    if ptype == "postpaid":
+        notif_msg = f"{staff.name} received ₹{a.customer_rate or 0} cash and completed duty for {a.customer_name}."
+        notif_title = "Duty Completed & Cash Collected"
+    else:
+        notif_msg = f"{staff.name} completed duty for {a.customer_name} (Prepaid)."
+        notif_title = "Duty Completed"
+
+    await notification_service.create(
+        title=notif_title,
+        message=notif_msg,
+        type=NotificationType.ASSIGNMENT,
+        link="/assignments",
+        reference_id=str(a.id),
+    )
+
+    return success_response(
+        data=await _staff_item(a, await _customer_phone(a)),
+        message="Duty marked as completed successfully",
     )
 
 

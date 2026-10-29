@@ -174,6 +174,13 @@ class PaymentStatus(StrEnum):
     PAID = "paid"
 
 
+class PaymentType(StrEnum):
+    """Payment model: prepaid (advance) vs postpaid (cash collected by staff)."""
+
+    PREPAID = "prepaid"
+    POSTPAID = "postpaid"
+
+
 class PaymentMode(StrEnum):
     """How a customer payment was received."""
 

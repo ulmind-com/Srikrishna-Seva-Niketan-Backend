@@ -14,6 +14,8 @@ from app.models.enums import (
     AcceptanceStatus,
     AssignmentPlace,
     AssignmentStatus,
+    PaymentStatus,
+    PaymentType,
     ShiftType,
 )
 
@@ -56,6 +58,12 @@ class Assignment(TimestampedDocument):
     customer_rate: Optional[int] = None  # contract value — revenue for this engagement
     employee_payout: Optional[int] = None  # paid to the staff member — an expense
     other_expense: Optional[int] = None  # misc cost for this engagement (travel, kit…)
+
+    payment_type: PaymentType = PaymentType.PREPAID
+    payment_status: PaymentStatus = PaymentStatus.PENDING
+    payment_received_at: Optional[dt.datetime] = None
+    payment_received_by: Optional[str] = None
+    work_completed_at: Optional[dt.datetime] = None
 
     notes: Optional[str] = None
 

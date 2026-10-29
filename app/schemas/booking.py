@@ -7,7 +7,7 @@ from typing import Optional
 
 from pydantic import BaseModel, EmailStr, Field
 
-from app.models.enums import BookingStatus, Gender
+from app.models.enums import BookingStatus, Gender, PaymentType
 from app.schemas.common import IdTimestampSchema
 
 
@@ -39,6 +39,7 @@ class BookingCreate(BaseModel):
     message: Optional[str] = Field(None, pattern=r"^[^<>]*$")
     source: Optional[str] = None
     location_id: Optional[str] = None
+    payment_type: Optional[PaymentType] = PaymentType.PREPAID
 
 
 class BookingUpdate(BaseModel):
@@ -61,6 +62,7 @@ class BookingUpdate(BaseModel):
     emergency_contact_phone: Optional[str] = None
     location_id: Optional[str] = None
     admin_notes: Optional[str] = None
+    payment_type: Optional[PaymentType] = None
 
 
 class BookingStatusUpdate(BaseModel):
@@ -96,6 +98,7 @@ class BookingResponse(IdTimestampSchema):
     emergency_contact_name: Optional[str] = None
     emergency_contact_phone: Optional[str] = None
     status: BookingStatus
+    payment_type: PaymentType = PaymentType.PREPAID
     assigned_staff_id: Optional[str] = None
     assigned_staff_name: Optional[str] = None
     admin_notes: Optional[str] = None

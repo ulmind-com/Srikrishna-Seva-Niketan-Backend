@@ -10,7 +10,7 @@ from beanie import Indexed
 from pydantic import EmailStr, Field
 
 from app.models.base import TimestampedDocument
-from app.models.enums import BookingStatus, Gender
+from app.models.enums import BookingStatus, Gender, PaymentType
 
 
 class Patient(TimestampedDocument):
@@ -66,6 +66,7 @@ class Booking(TimestampedDocument):
 
     # Workflow.
     status: BookingStatus = BookingStatus.PENDING
+    payment_type: PaymentType = PaymentType.PREPAID
     assigned_staff_id: Optional[str] = None
     assigned_staff_name: Optional[str] = None
     admin_notes: Optional[str] = None
