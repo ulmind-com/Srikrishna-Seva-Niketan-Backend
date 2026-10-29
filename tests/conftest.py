@@ -22,9 +22,15 @@ from beanie import init_beanie
 from httpx import ASGITransport, AsyncClient
 from mongomock_motor import AsyncMongoMockClient
 
+from app.core.limiter import limiter
 from app.database.seed import run_seed
 from app.main import app
 from app.models import ALL_DOCUMENT_MODELS
+
+# SlowAPI's in-memory counter is process-global and never resets between tests,
+# so login-based fixtures across the suite eventually trip the auth rate limit
+# and get a 429. Rate-limiting behaviour is not what these tests exercise.
+limiter.enabled = False
 
 
 @pytest_asyncio.fixture(scope="function")
