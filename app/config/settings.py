@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     )
 
     # ---- Application ----
-    APP_NAME: str = "Nupun Home Health Care Services"
+    APP_NAME: str = "Srikrishna Seva Niketan"
     APP_ENV: str = "development"
     DEBUG: bool = True
     API_V1_PREFIX: str = "/api/v1"

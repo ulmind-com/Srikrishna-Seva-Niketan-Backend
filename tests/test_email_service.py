@@ -58,3 +58,4 @@ async def test_send_assignment_notice_html_structure(monkeypatch):
 
     # Verify no raw escape codes
     assert "&lt;" not in rendered
+
