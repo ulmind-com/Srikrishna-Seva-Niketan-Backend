@@ -7,6 +7,7 @@ pagination, search, filtering, sorting and aggregation counting.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Dict, Generic, List, Optional, Sequence, Tuple, Type, TypeVar
 
 from beanie import Document
@@ -100,8 +101,6 @@ class BaseRepository(Generic[ModelT]):
                 ]
             } if query_filter else {"$or": [{field: regex} for field in self.search_fields]}
 
-        total = await self.model.find(query_filter).count()
-
         sort_field = sort_by or "created_at"
         query = (
             self.model.find(query_filter)
@@ -109,7 +108,10 @@ class BaseRepository(Generic[ModelT]):
             .skip((page - 1) * page_size)
             .limit(page_size)
         )
-        items = await query.to_list()
+        total, items = await asyncio.gather(
+            self.model.find(query_filter).count(),
+            query.to_list(),
+        )
         return items, total
 
     # ---- Update --------------------------------------------------------

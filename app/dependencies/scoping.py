@@ -14,13 +14,21 @@ from typing import Optional
 from app.core.exceptions import BadRequestException, ForbiddenException, NotFoundException
 from app.dependencies.auth import ActorContext
 
+_DEFAULT_LOCATION_ID: Optional[str] = None
+
+
+def set_default_location_id(loc_id: str) -> None:
+    global _DEFAULT_LOCATION_ID
+    _DEFAULT_LOCATION_ID = loc_id
+
 
 def resolve_create_location(actor: ActorContext, location_id: Optional[str]) -> str:
     """Validate and normalise the branch for a record being created.
 
     - Scoped managers: must target one of their branches; when omitted it
       defaults to their first branch.
-    - Unscoped users (super-admin / head-office): must supply a branch.
+    - Unscoped users (super-admin / head-office): defaults to the primary branch
+      (Head Office) when omitted instead of failing with 400.
     """
     if actor.is_scoped:
         if location_id:
@@ -31,6 +39,8 @@ def resolve_create_location(actor: ActorContext, location_id: Optional[str]) -> 
             return actor.location_ids[0]
         raise ForbiddenException("No branch is assigned to your account")
     if not location_id:
+        if _DEFAULT_LOCATION_ID:
+            return _DEFAULT_LOCATION_ID
         raise BadRequestException("location_id is required")
     return location_id
 

@@ -7,8 +7,9 @@ permission (resolving the user's role permissions + direct grants).
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from fastapi import Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -24,6 +25,20 @@ _bearer = HTTPBearer(auto_error=False, description="JWT access token")
 
 _users: BaseRepository[User] = BaseRepository(User)
 _roles: BaseRepository[Role] = BaseRepository(Role)
+
+# In-memory user cache (30s TTL) to eliminate repeated round-trips to distant DB on every request
+_USER_CACHE: Dict[str, Tuple[float, User]] = {}
+_USER_CACHE_TTL = 30.0  # seconds
+
+# In-memory role permissions cache (60s TTL)
+_ROLE_CACHE: Dict[str, Tuple[float, List[str]]] = {}
+_ROLE_CACHE_TTL = 60.0  # seconds
+
+def invalidate_user_cache(user_id: Optional[str] = None) -> None:
+    if user_id:
+        _USER_CACHE.pop(user_id, None)
+    else:
+        _USER_CACHE.clear()
 
 
 @dataclass
@@ -94,9 +109,20 @@ async def get_current_user(
         raise UnauthorizedException("Authentication required")
 
     payload = decode_token(credentials.credentials, expected_type=ACCESS_TOKEN_TYPE)
-    user = await _users.get(payload.get("sub", ""))
+    user_id = payload.get("sub", "")
+    if not user_id:
+        raise UnauthorizedException("Invalid token")
+
+    now = time.time()
+    if user_id in _USER_CACHE:
+        cached_time, cached_user = _USER_CACHE[user_id]
+        if now - cached_time < _USER_CACHE_TTL:
+            return cached_user
+
+    user = await _users.get(user_id)
     if user is None:
         raise UnauthorizedException("User no longer exists")
+    _USER_CACHE[user_id] = (now, user)
     return user
 
 
@@ -126,9 +152,15 @@ async def _resolve_permissions(user: User) -> set[str]:
     if user.is_superuser:
         return {ALL}
     permissions: set[str] = set(user.extra_permissions)
-    role = await _roles.find_one({"slug": user.role})
-    if role:
-        permissions.update(role.permissions)
+    now = time.time()
+    role_slug = user.role
+    if role_slug in _ROLE_CACHE and now - _ROLE_CACHE[role_slug][0] < _ROLE_CACHE_TTL:
+        permissions.update(_ROLE_CACHE[role_slug][1])
+    else:
+        role = await _roles.find_one({"slug": role_slug})
+        if role:
+            _ROLE_CACHE[role_slug] = (now, list(role.permissions))
+            permissions.update(role.permissions)
     return permissions
 
 

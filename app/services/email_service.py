@@ -179,8 +179,15 @@ class EmailService:
                     extra={"to": to, "subject": subject, "error": str(exc)},
                 )
 
-        # 2. Fallback to SMTP if configured
-        if settings.SMTP_HOST and settings.SMTP_USER:
+        # 2. Fallback to SMTP if configured and not dummy placeholder
+        is_dummy_smtp = (
+            not settings.SMTP_HOST
+            or not settings.SMTP_USER
+            or "your_email" in settings.SMTP_USER
+            or "example.com" in settings.SMTP_USER
+            or "your_app_password" in (settings.SMTP_PASSWORD or "")
+        )
+        if not is_dummy_smtp:
             message = EmailMessage()
             message["From"] = f"{settings.SMTP_FROM_NAME} <{settings.SMTP_FROM_EMAIL or settings.RESEND_FROM_EMAIL}>"
             message["To"] = to
@@ -197,12 +204,12 @@ class EmailService:
                     password=settings.SMTP_PASSWORD,
                     start_tls=settings.SMTP_TLS,
                     use_tls=settings.SMTP_SSL,
-                    timeout=30,
+                    timeout=4,
                 )
                 logger.info("Email sent via SMTP", extra={"to": to, "subject": subject})
                 return True
             except Exception as exc:  # noqa: BLE001 - never break the request path
-                logger.error(
+                logger.warning(
                     "Email send failed via SMTP",
                     extra={"to": to, "subject": subject, "error": str(exc)},
                 )

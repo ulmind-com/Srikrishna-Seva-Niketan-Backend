@@ -85,6 +85,8 @@ async def seed_admin() -> None:
 
 async def seed_locations() -> None:
     """Ensure standard Kolkata branches exist."""
+    from app.dependencies.scoping import set_default_location_id
+
     branches = [
         {"name": "Head Office", "code": "SSN-HO-0001", "city": "Kolkata", "order": 0},
         {"name": "Salt Lake Branch", "code": "SSN-SL-0002", "city": "Salt Lake", "order": 1},
@@ -94,7 +96,7 @@ async def seed_locations() -> None:
     for b in branches:
         existing = await Location.find_one({"code": b["code"]})
         if existing is None:
-            await Location(
+            existing = await Location(
                 name=b["name"],
                 code=b["code"],
                 city=b["city"],
@@ -102,6 +104,8 @@ async def seed_locations() -> None:
                 order=b["order"],
             ).insert()
             logger.info("Seeded location", extra={"code": b["code"]})
+        if b["code"] == "SSN-HO-0001" and existing:
+            set_default_location_id(str(existing.id))
 
 
 async def seed_employees() -> None:

@@ -9,7 +9,8 @@ the ``users`` collection and would fail), and an admin token cannot be used here
 
 from __future__ import annotations
 
-from typing import Optional
+import time
+from typing import Dict, Optional, Tuple
 
 from fastapi import Depends
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -23,6 +24,16 @@ _bearer = HTTPBearer(auto_error=False, description="Staff portal JWT access toke
 
 #: Claim marking a token as belonging to the staff portal.
 STAFF_SCOPE = "staff"
+
+# In-memory staff cache (30s TTL)
+_STAFF_CACHE: Dict[str, Tuple[float, Employee]] = {}
+_STAFF_CACHE_TTL = 30.0  # seconds
+
+def invalidate_staff_cache(staff_id: Optional[str] = None) -> None:
+    if staff_id:
+        _STAFF_CACHE.pop(staff_id, None)
+    else:
+        _STAFF_CACHE.clear()
 
 
 async def get_current_staff(
@@ -46,12 +57,19 @@ async def get_current_staff(
     if not subject:
         raise UnauthorizedException("Invalid token")
 
+    now = time.time()
+    if subject in _STAFF_CACHE:
+        cached_time, cached_staff = _STAFF_CACHE[subject]
+        if now - cached_time < _STAFF_CACHE_TTL:
+            return cached_staff
+
     staff = await Employee.get(subject)
     if staff is None:
         raise UnauthorizedException("Account no longer exists")
     if not staff.is_active:
         raise ForbiddenException("Your account has been deactivated")
 
+    _STAFF_CACHE[subject] = (now, staff)
     return staff
 
 
