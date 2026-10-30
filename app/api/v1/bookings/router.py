@@ -13,7 +13,7 @@ from app.core.limiter import limiter
 from app.core.pagination import PaginationParams, pagination_params
 from app.core.responses import success_response
 from app.dependencies.auth import ActorContext, require_permission
-from app.models.enums import BookingStatus
+from app.models.enums import BookingStatus, NotificationType
 from app.schemas.booking import (
     BookingAssign,
     BookingCreate,
@@ -25,6 +25,7 @@ from app.schemas.customer import CustomerResponse
 from pydantic import BaseModel
 from app.services.booking_service import booking_service
 from app.services.email_service import email_service
+from app.services.notification_service import notification_service
 
 router = APIRouter(prefix="/bookings", tags=["Bookings"])
 
@@ -48,6 +49,19 @@ async def create_booking(
                 "date": str(booking.preferred_date),
             },
         )
+    # Ring the office: broadcast an in-app admin notification (the admin panel's
+    # LiveNotificationListener polls unread notifications and plays the alert
+    # sound). Run in the background so a notification failure can never fail the
+    # public booking submission.
+    background_tasks.add_task(
+        notification_service.create,
+        "New booking received",
+        f"{booking.patient_name} booked {booking.service_name} "
+        f"({booking.payment_type}) for {booking.preferred_date}. Ref {booking.reference}.",
+        type=NotificationType.BOOKING,
+        link="/bookings",
+        reference_id=str(booking.id),
+    )
     return item_response(BookingResponse, booking, "Booking submitted successfully")
 
 
