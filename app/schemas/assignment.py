@@ -18,6 +18,34 @@ from app.models.enums import (
 from app.schemas.common import IdTimestampSchema
 
 
+def _parse_flexible_date(v):
+    if v is None or v == "":
+        return None
+    if isinstance(v, dt.date):
+        return v
+    if isinstance(v, str):
+        v = v.strip()
+        if not v:
+            return None
+        if "T" in v:
+            v = v.split("T")[0]
+        if "/" in v:
+            parts = v.split("/")
+            if len(parts) == 3:
+                if len(parts[2]) == 4:
+                    return dt.date(int(parts[2]), int(parts[1]), int(parts[0]))
+                elif len(parts[0]) == 4:
+                    return dt.date(int(parts[0]), int(parts[1]), int(parts[2]))
+        elif "-" in v:
+            parts = v.split("-")
+            if len(parts) == 3:
+                if len(parts[2]) == 4:
+                    return dt.date(int(parts[2]), int(parts[1]), int(parts[0]))
+                elif len(parts[0]) == 4:
+                    return dt.date(int(parts[0]), int(parts[1]), int(parts[2]))
+    return v
+
+
 class AssignmentCreate(BaseModel):
     customer_id: str
     employee_id: str
@@ -41,8 +69,12 @@ class AssignmentCreate(BaseModel):
     dest_lat: Optional[float] = Field(None, ge=-90, le=90)
     dest_lng: Optional[float] = Field(None, ge=-180, le=180)
 
+    @field_validator("start_date", "end_date", mode="before")
+    @classmethod
+    def validate_dates(cls, v):
+        return _parse_flexible_date(v)
+
     @field_validator(
-        "end_date",
         "duration_days",
         "customer_rate",
         "employee_payout",
@@ -83,8 +115,12 @@ class AssignmentUpdate(BaseModel):
     dest_lat: Optional[float] = Field(None, ge=-90, le=90)
     dest_lng: Optional[float] = Field(None, ge=-180, le=180)
 
+    @field_validator("start_date", "end_date", mode="before")
+    @classmethod
+    def validate_update_dates(cls, v):
+        return _parse_flexible_date(v)
+
     @field_validator(
-        "end_date",
         "duration_days",
         "customer_rate",
         "employee_payout",

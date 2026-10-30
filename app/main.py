@@ -109,6 +109,16 @@ def create_app() -> FastAPI:
 
     @app.get("/health", tags=["Health"], summary="Health check")
     async def health() -> dict:
+        return success_response(
+            data={
+                "status": "ok",
+                "version": __version__,
+            },
+            message="Health check",
+        )
+
+    @app.get("/health/db", tags=["Health"], summary="Database health check")
+    async def health_db() -> dict:
         db_ok = await ping()
         return success_response(
             data={
@@ -116,7 +126,7 @@ def create_app() -> FastAPI:
                 "database": "connected" if db_ok else "disconnected",
                 "version": __version__,
             },
-            message="Health check",
+            message="Database health check",
         )
 
     return app

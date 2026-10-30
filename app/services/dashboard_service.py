@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
-from typing import Any, Dict, List, Optional
+import time
+from typing import Any, Dict, List, Optional, Tuple
 
 from bson import ObjectId
 from app.models.assignment import Assignment
@@ -20,6 +21,11 @@ from app.models.finance import Expense
 from app.models.location import Location
 from app.models.service import Service
 
+# In-memory short-lived cache so dashboard polling and concurrent widget calls
+# return in <1ms without hitting the database repeatedly.
+_STATS_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+_STATS_CACHE_TTL = 8.0  # seconds
+
 
 class DashboardService:
     """Aggregate cross-collection statistics for the admin dashboard."""
@@ -34,10 +40,15 @@ class DashboardService:
         is_scoped = bool(actor and getattr(actor, "is_scoped", False))
         location_ids = list(getattr(actor, "location_ids", [])) if is_scoped else []
 
+        cache_key = f"{is_scoped}:{sorted(location_ids)}"
+        now = time.time()
+        if cache_key in _STATS_CACHE:
+            cached_time, cached_data = _STATS_CACHE[cache_key]
+            if now - cached_time < _STATS_CACHE_TTL:
+                return cached_data
+
         scope: Dict[str, Any] = {"location_id": {"$in": location_ids}} if is_scoped else {}
 
-        # Branch-name lookup (scoped) and the active-location list (super admin)
-        # are wrapped so they can be fired alongside every other query below.
         async def _branch_names() -> List[str]:
             if not is_scoped:
                 return []
@@ -50,99 +61,145 @@ class DashboardService:
                 return []
             return await Location.find({"is_active": True}).sort("order").to_list()
 
-        # Every query here is independent, so fire them concurrently on the
-        # connection pool instead of awaiting ~20 round-trips one by one. With a
-        # distant DB this is the difference between ~15s and ~1s per load.
+        # Ultra-fast MongoDB aggregation pipelines: summarize collections server-side
+        # in a single query rather than running dozens of round-trips.
+        emp_pipeline = [
+            {"$match": scope},
+            {
+                "$group": {
+                    "_id": None,
+                    "total": {"$sum": 1},
+                    "working": {"$sum": {"$cond": [{"$eq": ["$status", "assigned"]}, 1, 0]}},
+                    "available": {"$sum": {"$cond": [{"$eq": ["$status", "available"]}, 1, 0]}},
+                    "on_leave": {"$sum": {"$cond": [{"$eq": ["$status", "on_leave"]}, 1, 0]}},
+                    "verified": {"$sum": {"$cond": [{"$eq": ["$verification_status", "verified"]}, 1, 0]}},
+                    "pending": {"$sum": {"$cond": [{"$eq": ["$verification_status", "pending"]}, 1, 0]}},
+                }
+            },
+        ]
+
+        booking_pipeline = [
+            {
+                "$group": {
+                    "_id": None,
+                    "total": {"$sum": 1},
+                    "pending": {"$sum": {"$cond": [{"$eq": ["$status", "pending"]}, 1, 0]}},
+                    "approved": {"$sum": {"$cond": [{"$eq": ["$status", "approved"]}, 1, 0]}},
+                    "completed": {"$sum": {"$cond": [{"$eq": ["$status", "completed"]}, 1, 0]}},
+                }
+            }
+        ]
+
+        assign_pipeline = [
+            {"$match": {**scope, "status": {"$ne": "cancelled"}}},
+            {
+                "$group": {
+                    "_id": None,
+                    "revenue": {"$sum": "$customer_rate"},
+                    "payout": {"$sum": "$employee_payout"},
+                    "other_expense": {"$sum": "$other_expense"},
+                    "count": {"$sum": 1},
+                }
+            },
+        ]
+
+        exp_pipeline = [
+            {"$match": scope},
+            {"$group": {"_id": None, "total": {"$sum": "$amount"}}},
+        ]
+
+        branch_emp_pipeline = [
+            {
+                "$group": {
+                    "_id": "$location_id",
+                    "total": {"$sum": 1},
+                    "working": {"$sum": {"$cond": [{"$eq": ["$status", "assigned"]}, 1, 0]}},
+                }
+            }
+        ]
+
+        branch_assign_pipeline = [
+            {"$match": {"status": {"$ne": "cancelled"}}},
+            {"$group": {"_id": "$location_id", "revenue": {"$sum": "$customer_rate"}}},
+        ]
+
         (
             branch_names,
-            total_staff,
-            working_staff,
-            available_staff,
-            on_leave_staff,
-            verified_staff,
-            pending_staff,
+            all_locs,
+            emp_agg,
+            booking_agg,
+            assign_agg,
+            exp_agg,
+            branch_emp_agg,
+            branch_assign_agg,
             active_assignments,
             active_customers,
-            all_assignments,
-            paid_expenses,
-            total_bookings,
-            pending_bookings,
-            approved_bookings,
-            completed_bookings,
             total_services,
             total_equipment,
             total_rentals,
             total_applications,
             new_contacts,
             total_blogs,
-            all_locs,
         ) = await asyncio.gather(
             _branch_names(),
-            Employee.find(scope).count(),
-            Employee.find({**scope, "status": "assigned"}).count(),
-            Employee.find({**scope, "status": "available"}).count(),
-            Employee.find({**scope, "status": "on_leave"}).count(),
-            Employee.find({**scope, "verification_status": "verified"}).count(),
-            Employee.find({**scope, "verification_status": "pending"}).count(),
+            _all_locs(),
+            Employee.aggregate(emp_pipeline).to_list(),
+            Booking.aggregate(booking_pipeline).to_list(),
+            Assignment.aggregate(assign_pipeline).to_list(),
+            Expense.aggregate(exp_pipeline).to_list(),
+            Employee.aggregate(branch_emp_pipeline).to_list() if not is_scoped else asyncio.sleep(0, result=[]),
+            Assignment.aggregate(branch_assign_pipeline).to_list() if not is_scoped else asyncio.sleep(0, result=[]),
             Assignment.find({**scope, "status": {"$in": ["scheduled", "active"]}}).count(),
             Customer.find({**scope, "is_active": True}).count(),
-            # Revenue & expense — assignment-driven, matching the P&L report:
-            # contract amounts in, staff payout + other engagement cost + the
-            # standalone expense ledger out.
-            Assignment.find({**scope, "status": {"$ne": "cancelled"}}).to_list(),
-            Expense.find(scope).to_list(),
-            Booking.find({}).count(),
-            Booking.find({"status": BookingStatus.PENDING}).count(),
-            Booking.find({"status": BookingStatus.APPROVED}).count(),
-            Booking.find({"status": BookingStatus.COMPLETED}).count(),
             Service.find({}).count(),
             Equipment.find({}).count(),
             EquipmentRental.find({}).count(),
             JobApplication.find({}).count(),
             ContactMessage.find({"status": "new"}).count(),
             Blog.find({}).count(),
-            _all_locs(),
         )
 
-        total_revenue = sum(a.customer_rate or 0 for a in all_assignments)
-        assignment_cost = sum(
-            (a.employee_payout or 0) + (a.other_expense or 0)
-            for a in all_assignments
-        )
-        total_expense = assignment_cost + sum(e.amount for e in paid_expenses)
+        emp_data = emp_agg[0] if emp_agg else {}
+        total_staff = emp_data.get("total", 0)
+        working_staff = emp_data.get("working", 0)
+        available_staff = emp_data.get("available", 0)
+        on_leave_staff = emp_data.get("on_leave", 0)
+        verified_staff = emp_data.get("verified", 0)
+        pending_staff = emp_data.get("pending", 0)
+
+        book_data = booking_agg[0] if booking_agg else {}
+        total_bookings = book_data.get("total", 0)
+        pending_bookings = book_data.get("pending", 0)
+        approved_bookings = book_data.get("approved", 0)
+        completed_bookings = book_data.get("completed", 0)
+
+        assign_data = assign_agg[0] if assign_agg else {}
+        total_revenue = assign_data.get("revenue", 0)
+        assignment_cost = assign_data.get("payout", 0) + assign_data.get("other_expense", 0)
+        payment_count = assign_data.get("count", 0)
+
+        total_expense = assignment_cost + (exp_agg[0]["total"] if exp_agg else 0)
         profit = total_revenue - total_expense
-        payment_count = len(all_assignments)
 
-        # Per-branch rollup for Super Admin — each branch's 3 queries run
-        # concurrently, and all branches are rolled up in parallel too (no N+1
-        # serial loop).
+        # Map branch summaries in O(1) from aggregation dictionaries
         branches_summary: List[Dict[str, Any]] = []
         if not is_scoped and all_locs:
-            async def _branch_row(loc: Any) -> Dict[str, Any]:
+            b_emp_map = {str(r["_id"]): r for r in branch_emp_agg if r.get("_id")}
+            b_rev_map = {str(r["_id"]): r.get("revenue", 0) for r in branch_assign_agg if r.get("_id")}
+            for loc in all_locs:
                 loc_id = str(loc.id)
-                loc_scope = {"location_id": loc_id}
-                b_staff, b_working, b_assignments = await asyncio.gather(
-                    Employee.find(loc_scope).count(),
-                    Employee.find({**loc_scope, "status": "assigned"}).count(),
-                    Assignment.find(
-                        {**loc_scope, "status": {"$ne": "cancelled"}}
-                    ).to_list(),
-                )
-                return {
+                emp_info = b_emp_map.get(loc_id, {})
+                branches_summary.append({
                     "id": loc_id,
                     "name": loc.name,
                     "code": loc.code,
                     "city": loc.city,
-                    "total_staff": b_staff,
-                    "working_staff": b_working,
-                    "revenue": sum(a.customer_rate or 0 for a in b_assignments),
-                }
+                    "total_staff": emp_info.get("total", 0),
+                    "working_staff": emp_info.get("working", 0),
+                    "revenue": b_rev_map.get(loc_id, 0),
+                })
 
-            branches_summary = list(
-                await asyncio.gather(*[_branch_row(loc) for loc in all_locs])
-            )
-
-        return {
+        result_data = {
             "is_scoped": is_scoped,
             "branch_names": branch_names,
             "branch_ids": location_ids,
@@ -181,6 +238,8 @@ class DashboardService:
             "blogs": total_blogs,
             "branches_summary": branches_summary,
         }
+        _STATS_CACHE[cache_key] = (now, result_data)
+        return result_data
 
     async def booking_status_breakdown(self) -> Dict[str, int]:
         """Return a count per booking status (for a pie/donut chart)."""

@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import datetime as dt
+
 from app.config import settings
 from app.core.logging import get_logger
 from app.core.permissions import DEFAULT_ROLES, all_permission_codes
 from app.core.security import hash_password
+from app.models.employee import Employee
 from app.models.location import Location
 from app.models.rbac import Permission, Role
 from app.models.user import User
@@ -81,17 +84,101 @@ async def seed_admin() -> None:
 
 
 async def seed_locations() -> None:
-    """Ensure at least one branch exists so staff/customers can be assigned."""
-    if await Location.find_one({}) is not None:
+    """Ensure standard Kolkata branches exist."""
+    branches = [
+        {"name": "Head Office", "code": "SSN-HO-0001", "city": "Kolkata", "order": 0},
+        {"name": "Salt Lake Branch", "code": "SSN-SL-0002", "city": "Salt Lake", "order": 1},
+        {"name": "New Town Branch", "code": "SSN-NT-0003", "city": "New Town", "order": 2},
+        {"name": "Park Street Branch", "code": "SSN-PS-0004", "city": "Park Street", "order": 3},
+    ]
+    for b in branches:
+        existing = await Location.find_one({"code": b["code"]})
+        if existing is None:
+            await Location(
+                name=b["name"],
+                code=b["code"],
+                city=b["city"],
+                is_active=True,
+                order=b["order"],
+            ).insert()
+            logger.info("Seeded location", extra={"code": b["code"]})
+
+
+async def seed_employees() -> None:
+    """Ensure initial verified staff exist for assignment and testing."""
+    if await Employee.find_one({}) is not None:
         return
-    await Location(
-        name="Head Office",
-        code="SSN-HO-0001",
-        city="Kolkata",
-        is_active=True,
-        order=0,
-    ).insert()
-    logger.info("Seeded default location (Head Office)")
+
+    ho = await Location.find_one({"code": "SSN-HO-0001"})
+    sl = await Location.find_one({"code": "SSN-SL-0002"}) or ho
+    loc_id = str(ho.id) if ho else "ho"
+    sl_id = str(sl.id) if sl else loc_id
+
+    from app.models.enums import EmployeeStatus, Gender, StaffVerificationStatus
+
+    pw_hash = hash_password("admin12345")
+    sample_staff = [
+        Employee(
+            code="EMP-SSN-0001",
+            name="Arnab Senapati",
+            email="nurse@nupunhealth.com",
+            phone="8537861040",
+            category="nurse",
+            designation="Senior Staff Nurse",
+            hrms_code="HRMS-7701",
+            gender=Gender.MALE,
+            city="Kolkata",
+            location_id=loc_id,
+            status=EmployeeStatus.AVAILABLE,
+            verification_status=StaffVerificationStatus.VERIFIED,
+            hashed_password=pw_hash,
+            auth_provider="password",
+            verified_at=dt.datetime.now(dt.timezone.utc),
+            join_date=dt.date.today(),
+            daily_rate=500,
+        ),
+        Employee(
+            code="EMP-SSN-0002",
+            name="Rupa Dey",
+            email="rupadey@nupunhealth.com",
+            phone="9876543211",
+            category="nurse",
+            designation="Critical Care Specialist",
+            hrms_code="HRMS-7702",
+            gender=Gender.FEMALE,
+            city="Salt Lake",
+            location_id=sl_id,
+            status=EmployeeStatus.AVAILABLE,
+            verification_status=StaffVerificationStatus.VERIFIED,
+            hashed_password=pw_hash,
+            auth_provider="password",
+            verified_at=dt.datetime.now(dt.timezone.utc),
+            join_date=dt.date.today(),
+            daily_rate=600,
+        ),
+        Employee(
+            code="EMP-SSN-0003",
+            name="Priya Mondal",
+            email="priyamondal@nupunhealth.com",
+            phone="9876543212",
+            category="aaya",
+            designation="General Duty Assistant (GDA)",
+            hrms_code="HRMS-7703",
+            gender=Gender.FEMALE,
+            city="Kolkata",
+            location_id=loc_id,
+            status=EmployeeStatus.AVAILABLE,
+            verification_status=StaffVerificationStatus.VERIFIED,
+            hashed_password=pw_hash,
+            auth_provider="password",
+            verified_at=dt.datetime.now(dt.timezone.utc),
+            join_date=dt.date.today(),
+            daily_rate=400,
+        ),
+    ]
+    for emp in sample_staff:
+        await emp.insert()
+        logger.info("Seeded employee", extra={"code": emp.code, "name": emp.name})
 
 
 async def run_seed() -> None:
@@ -100,3 +187,4 @@ async def run_seed() -> None:
     await seed_roles()
     await seed_admin()
     await seed_locations()
+    await seed_employees()

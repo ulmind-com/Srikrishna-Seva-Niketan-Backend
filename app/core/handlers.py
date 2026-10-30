@@ -15,6 +15,17 @@ from app.core.responses import error_response
 logger = get_logger(__name__)
 
 
+def _with_cors(request: Request, response: JSONResponse) -> JSONResponse:
+    """Ensure CORS headers are present on all error responses, preventing browser Failed to fetch."""
+    origin = request.headers.get("origin") or "*"
+    response.headers["Access-Control-Allow-Origin"] = origin
+    if origin != "*":
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "*"
+    return response
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     """Attach all global exception handlers to the FastAPI app."""
 
@@ -24,9 +35,12 @@ def register_exception_handlers(app: FastAPI) -> None:
             "Application exception",
             extra={"path": request.url.path, "status": exc.status_code, "detail": exc.message},
         )
-        return JSONResponse(
-            status_code=exc.status_code,
-            content=error_response(message=exc.message, errors=exc.errors),
+        return _with_cors(
+            request,
+            JSONResponse(
+                status_code=exc.status_code,
+                content=error_response(message=exc.message, errors=exc.errors),
+            ),
         )
 
     @app.exception_handler(RequestValidationError)
@@ -41,29 +55,38 @@ def register_exception_handlers(app: FastAPI) -> None:
             }
             for err in exc.errors()
         ]
-        return JSONResponse(
-            status_code=422,
-            content=error_response(message="Validation failed", errors=errors),
+        return _with_cors(
+            request,
+            JSONResponse(
+                status_code=422,
+                content=error_response(message="Validation failed", errors=errors),
+            ),
         )
 
     @app.exception_handler(StarletteHTTPException)
     async def _http_exception_handler(
         request: Request, exc: StarletteHTTPException
     ) -> JSONResponse:
-        return JSONResponse(
-            status_code=exc.status_code,
-            content=error_response(message=str(exc.detail)),
+        return _with_cors(
+            request,
+            JSONResponse(
+                status_code=exc.status_code,
+                content=error_response(message=str(exc.detail)),
+            ),
         )
 
     @app.exception_handler(RateLimitExceeded)
     async def _rate_limit_handler(
         request: Request, exc: RateLimitExceeded
     ) -> JSONResponse:
-        return JSONResponse(
-            status_code=429,
-            content=error_response(
-                message="Too many requests, please slow down",
-                errors={"limit": str(exc.limit.limit)},
+        return _with_cors(
+            request,
+            JSONResponse(
+                status_code=429,
+                content=error_response(
+                    message="Too many requests, please slow down",
+                    errors={"limit": str(exc.limit.limit)},
+                ),
             ),
         )
 
@@ -72,12 +95,10 @@ def register_exception_handlers(app: FastAPI) -> None:
         request: Request, exc: Exception
     ) -> JSONResponse:
         logger.exception("Unhandled server error", extra={"path": request.url.path})
-        resp = JSONResponse(
-            status_code=500,
-            content=error_response(message="Internal server error"),
+        return _with_cors(
+            request,
+            JSONResponse(
+                status_code=500,
+                content=error_response(message="Internal server error"),
+            ),
         )
-        origin = request.headers.get("origin")
-        if origin:
-            resp.headers["Access-Control-Allow-Origin"] = origin
-            resp.headers["Access-Control-Allow-Credentials"] = "true"
-        return resp

@@ -27,7 +27,13 @@ async def connect_to_mongo() -> AsyncIOMotorClient:
     logger.info("Connecting to MongoDB", extra={"db": settings.MONGODB_DB_NAME})
     _client = AsyncIOMotorClient(
         settings.MONGODB_URL,
-        serverSelectionTimeoutMS=10_000,
+        maxPoolSize=25,
+        minPoolSize=2,
+        maxIdleTimeMS=45_000,
+        connectTimeoutMS=5_000,
+        socketTimeoutMS=10_000,
+        serverSelectionTimeoutMS=5_000,
+        waitQueueTimeoutMS=5_000,
         uuidRepresentation="standard",
     )
     _database = _client[settings.MONGODB_DB_NAME]
@@ -75,7 +81,9 @@ def get_database() -> AsyncIOMotorDatabase:
 async def ping() -> bool:
     """Return ``True`` when the database responds to a ping."""
     try:
-        await get_client().admin.command("ping")
+        import asyncio
+        client = get_client()
+        await asyncio.wait_for(client.admin.command("ping"), timeout=2.0)
         return True
     except Exception:  # noqa: BLE001 - health check must never raise
         return False
