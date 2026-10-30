@@ -61,12 +61,16 @@ async def login(request: Request, response: Response, payload: LoginRequest) -> 
         ip_address=_client_ip(request),
         user_agent=request.headers.get("User-Agent"),
     )
-    # Refresh token goes only into a Secure, HttpOnly cookie — never the body.
+    # Primary path: Secure, HttpOnly cookie. Fallback: the refresh token is also
+    # returned in the body so SPAs on a different site (e.g. Vercel admin ->
+    # Render API) can store it and present it via the X-Refresh-Token header,
+    # since browsers (notably Brave/modern Chrome) block the third-party cookie.
     set_refresh_cookie(response, refresh, path=ADMIN_REFRESH_PATH)
     issue_csrf_cookie(response)
     return success_response(
         data={
             "access_token": access,
+            "refresh_token": refresh,
             "token_type": "bearer",
             "expires_in": settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
             "user": await _user_payload(user),
@@ -84,9 +88,17 @@ async def refresh(request: Request, response: Response) -> dict:
     by the double-submit CSRF check. A fresh refresh token is written back to
     the cookie; only the new access token is returned in the body.
     """
-    require_csrf(request)
-    token = read_refresh_cookie(request, path=ADMIN_REFRESH_PATH)
-    if not token:
+    # Cookie path is CSRF-guarded (double-submit). The header fallback carries
+    # the refresh token itself as a bearer-style credential — an attacker site
+    # cannot read it to forge the header, so no CSRF check applies there.
+    cookie_token = read_refresh_cookie(request, path=ADMIN_REFRESH_PATH)
+    header_token = request.headers.get("X-Refresh-Token")
+    if cookie_token:
+        require_csrf(request)
+        token = cookie_token
+    elif header_token:
+        token = header_token
+    else:
         raise UnauthorizedException("No active session")
     try:
         access, new_refresh = await auth_service.refresh(
@@ -104,6 +116,7 @@ async def refresh(request: Request, response: Response) -> dict:
     return success_response(
         data={
             "access_token": access,
+            "refresh_token": new_refresh,
             "token_type": "bearer",
             "expires_in": settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         },
@@ -118,8 +131,13 @@ async def logout(request: Request, response: Response) -> dict:
     CSRF-guarded but does not require a live access token, so a user whose
     access token has already expired can still log out cleanly.
     """
-    require_csrf(request)
-    token = read_refresh_cookie(request, path=ADMIN_REFRESH_PATH)
+    cookie_token = read_refresh_cookie(request, path=ADMIN_REFRESH_PATH)
+    header_token = request.headers.get("X-Refresh-Token")
+    if cookie_token:
+        require_csrf(request)
+        token = cookie_token
+    else:
+        token = header_token  # header fallback: no CSRF (bearer-style credential)
     if token:
         await auth_service.logout(token)
     clear_refresh_cookie(response, path=ADMIN_REFRESH_PATH)

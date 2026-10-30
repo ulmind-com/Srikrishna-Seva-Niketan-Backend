@@ -150,6 +150,10 @@ async def _issue_session(response: Response, staff: Employee) -> dict:
     issue_csrf_cookie(response)
     return {
         "access_token": access,
+        # Fallback for cross-site deploys where the browser blocks the
+        # third-party refresh cookie: the SPA stores this and presents it via
+        # the X-Refresh-Token header on refresh/logout.
+        "refresh_token": refresh,
         "token_type": "bearer",
         "expires_in": settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
     }
@@ -391,9 +395,14 @@ async def refresh(request: Request, response: Response) -> dict:
     revoked and a fresh refresh cookie is set. Only the access token is
     returned in the body.
     """
-    require_csrf(request)
-    token = read_refresh_cookie(request, path=STAFF_REFRESH_PATH)
-    if not token:
+    cookie_token = read_refresh_cookie(request, path=STAFF_REFRESH_PATH)
+    header_token = request.headers.get("X-Refresh-Token")
+    if cookie_token:
+        require_csrf(request)
+        token = cookie_token
+    elif header_token:
+        token = header_token  # bearer-style credential; CSRF not applicable
+    else:
         raise UnauthorizedException("No active session")
 
     try:
@@ -427,8 +436,13 @@ async def refresh(request: Request, response: Response) -> dict:
 @router.post("/logout", summary="Staff logout (revoke refresh session)")
 async def logout(request: Request, response: Response) -> dict:
     """Revoke the staff refresh session from its cookie and clear the cookies."""
-    require_csrf(request)
-    token = read_refresh_cookie(request, path=STAFF_REFRESH_PATH)
+    cookie_token = read_refresh_cookie(request, path=STAFF_REFRESH_PATH)
+    header_token = request.headers.get("X-Refresh-Token")
+    if cookie_token:
+        require_csrf(request)
+        token = cookie_token
+    else:
+        token = header_token  # header fallback: no CSRF (bearer-style credential)
     if token:
         try:
             claims = decode_token(token, expected_type=REFRESH_TOKEN_TYPE)

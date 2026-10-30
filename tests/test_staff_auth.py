@@ -49,7 +49,8 @@ async def test_register_sets_cookie_no_body_refresh(client):
     resp = await _register(client)
     data = resp.json()["data"]
     assert data["access_token"]
-    assert "refresh_token" not in data
+    # Refresh token is returned in the body (cross-site fallback) and the cookie.
+    assert data["refresh_token"]
     assert client.cookies.get(settings.STAFF_REFRESH_COOKIE_NAME)
     assert client.cookies.get(settings.CSRF_COOKIE_NAME)
 

@@ -28,8 +28,8 @@ async def test_login_returns_access_only_and_sets_cookies(client):
     resp = await _login(client)
     data = resp.json()["data"]
     assert data["access_token"]
-    # Refresh token must never appear in the body.
-    assert "refresh_token" not in data
+    # Refresh token is in the body as a cross-site fallback AND in the cookie.
+    assert data["refresh_token"]
     assert data["user"]["email"] == ADMIN["email"]
     # Refresh + CSRF cookies are set.
     assert client.cookies.get(settings.REFRESH_COOKIE_NAME)
@@ -66,7 +66,8 @@ async def test_refresh_rotates_cookie_and_returns_new_access(client):
     assert resp.status_code == 200
     data = resp.json()["data"]
     assert data["access_token"]
-    assert "refresh_token" not in data
+    # Rotated refresh token is returned in the body (cross-site fallback) too.
+    assert data["refresh_token"]
     # Rotation: a different refresh token is now in the cookie.
     assert client.cookies.get(settings.REFRESH_COOKIE_NAME) != old_refresh
 
