@@ -297,17 +297,10 @@ async def create_assignment(
 
     doc = await _assignments.create(data, actor)
 
-    # Mark the staff member occupied + notify the branch.
+    # Mark the staff member occupied.
     if doc.status in _OCCUPYING:
         await _set_employee_status(str(employee.id), EmployeeStatus.ASSIGNED)
-    await notification_service.create(
-        title="New assignment",
-        message=f"{employee.name} assigned to {customer.name} ({doc.shift} shift).",
-        type=NotificationType.ASSIGNMENT,
-        link="/assignments",
-        reference_id=str(doc.id),
-    )
-    # Also notify the staff member in their own portal panel.
+    # Notify the staff member in their own portal panel.
     await notification_service.create(
         title="New duty assignment",
         message=f"You are assigned to {customer.name} ({_place_text(doc)}, {doc.shift} shift) from {doc.start_date.isoformat()}.",
