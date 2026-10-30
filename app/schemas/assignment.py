@@ -5,7 +5,7 @@ from __future__ import annotations
 import datetime as dt
 from typing import Optional
 
-from pydantic import BaseModel, Field, computed_field
+from pydantic import BaseModel, Field, computed_field, field_validator
 
 from app.models.enums import (
     AcceptanceStatus,
@@ -40,6 +40,25 @@ class AssignmentCreate(BaseModel):
     # Explicit confirmed coordinates (admin pin drop on the assignment)
     dest_lat: Optional[float] = Field(None, ge=-90, le=90)
     dest_lng: Optional[float] = Field(None, ge=-180, le=180)
+
+    @field_validator(
+        "end_date",
+        "duration_days",
+        "customer_rate",
+        "employee_payout",
+        "other_expense",
+        "dest_lat",
+        "dest_lng",
+        "place_name",
+        "address",
+        "notes",
+        mode="before",
+    )
+    @classmethod
+    def sanitize_empty_values(cls, v):
+        if v == "" or v is None:
+            return None
+        return v
     # location_id is derived from the customer/employee, not supplied directly.
 
 
@@ -63,6 +82,25 @@ class AssignmentUpdate(BaseModel):
     notes: Optional[str] = Field(None, max_length=2000)
     dest_lat: Optional[float] = Field(None, ge=-90, le=90)
     dest_lng: Optional[float] = Field(None, ge=-180, le=180)
+
+    @field_validator(
+        "end_date",
+        "duration_days",
+        "customer_rate",
+        "employee_payout",
+        "other_expense",
+        "dest_lat",
+        "dest_lng",
+        "place_name",
+        "address",
+        "notes",
+        mode="before",
+    )
+    @classmethod
+    def sanitize_empty_values(cls, v):
+        if v == "" or v is None:
+            return None
+        return v
 
 
 class AssignmentResponse(IdTimestampSchema):
