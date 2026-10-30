@@ -63,11 +63,21 @@ class BookingUpdate(BaseModel):
     location_id: Optional[str] = None
     admin_notes: Optional[str] = None
     payment_type: Optional[PaymentType] = None
+    status: Optional[BookingStatus] = None
+    assigned_staff_id: Optional[str] = None
+    assigned_staff_name: Optional[str] = None
 
 
 class BookingStatusUpdate(BaseModel):
     """Payload for status transitions (reject/cancel with a reason)."""
 
+    reason: Optional[str] = None
+
+
+class BookingStatusChangePayload(BaseModel):
+    """Payload to transition a booking to any status directly."""
+
+    status: BookingStatus
     reason: Optional[str] = None
 
 

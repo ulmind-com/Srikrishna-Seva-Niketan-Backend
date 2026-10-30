@@ -32,6 +32,7 @@ class BookingStatus(StrEnum):
 
     PENDING = "pending"
     APPROVED = "approved"
+    ASSIGNED = "assigned"
     REJECTED = "rejected"
     IN_PROGRESS = "in_progress"
     COMPLETED = "completed"

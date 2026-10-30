@@ -18,6 +18,7 @@ from app.schemas.booking import (
     BookingAssign,
     BookingCreate,
     BookingResponse,
+    BookingStatusChangePayload,
     BookingStatusUpdate,
     BookingUpdate,
 )
@@ -156,6 +157,18 @@ async def cancel_booking(
         booking_id, BookingStatus.CANCELLED, actor, reason=payload.reason
     )
     return item_response(BookingResponse, booking, "Booking cancelled")
+
+
+@router.post("/{booking_id}/status", summary="Change booking status directly")
+async def change_booking_status(
+    booking_id: str,
+    payload: BookingStatusChangePayload,
+    actor: ActorContext = Depends(require_permission("bookings", "update")),
+) -> dict:
+    booking = await booking_service.change_status(
+        booking_id, payload.status, actor, reason=payload.reason
+    )
+    return item_response(BookingResponse, booking, f"Booking status changed to {payload.status}")
 
 
 @router.post("/{booking_id}/assign", summary="Assign staff to booking")

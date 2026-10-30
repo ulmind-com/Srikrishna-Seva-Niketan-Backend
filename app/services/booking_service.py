@@ -138,12 +138,6 @@ class BookingService:
         """Transition a booking to a new status with validation."""
         booking = await self.get_or_404(booking_id, actor)
 
-        terminal = {BookingStatus.COMPLETED, BookingStatus.CANCELLED, BookingStatus.REJECTED}
-        if booking.status in terminal and status != booking.status:
-            raise BadRequestException(
-                f"Booking is already {booking.status} and cannot be changed"
-            )
-
         booking.status = status
         if reason:
             note = f"[{status}] {reason}"
@@ -159,6 +153,8 @@ class BookingService:
         action_map = {
             BookingStatus.APPROVED: ActivityAction.APPROVE,
             BookingStatus.REJECTED: ActivityAction.REJECT,
+            BookingStatus.ASSIGNED: ActivityAction.UPDATE,
+            BookingStatus.CANCELLED: ActivityAction.UPDATE,
         }
         await self._audit(
             action_map.get(status, ActivityAction.UPDATE),
@@ -172,8 +168,10 @@ class BookingService:
         booking = await self.get_or_404(booking_id, actor)
         booking.assigned_staff_id = staff_id
         booking.assigned_staff_name = staff_name
+        booking.status = BookingStatus.ASSIGNED
         booking.touch()
         await booking.save()
+        await notification_service.mark_read_by_reference(str(booking.id))
         await self._audit(
             ActivityAction.UPDATE, booking, actor, f"Assigned {staff_name}"
         )
