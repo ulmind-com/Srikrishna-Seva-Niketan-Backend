@@ -67,6 +67,22 @@ class NotificationService:
                     "Background webpush trigger caught exception",
                     extra={"error": str(exc), "employee_id": employee_id},
                 )
+        else:
+            try:
+                # Broadcast web push to registered admin devices
+                asyncio.create_task(
+                    webpush_service.send_to_admins(
+                        title=title,
+                        message=message,
+                        url=link or "/bookings",
+                        data={"reference_id": reference_id, "type": type.value},
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Admin webpush trigger caught exception",
+                    extra={"error": str(exc)},
+                )
 
         return created
 

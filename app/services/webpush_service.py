@@ -246,6 +246,29 @@ class WebPushService:
         failed = len(results) - sent
         return {"sent": sent, "failed": failed, "total": len(subs)}
 
+    async def send_to_admins(
+        self,
+        title: str,
+        message: str,
+        *,
+        url: str = "/assignments",
+        urgency: str = "high",
+        data: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, int]:
+        """Broadcast push notification to all registered admin devices."""
+        subs = await PushSubscription.find(
+            {"user_id": {"$ne": None}, "is_active": True}
+        ).to_list()
+
+        if not subs:
+            return {"sent": 0, "failed": 0, "total": 0}
+
+        payload = self.build_payload(title, message, url=url, urgency=urgency, data=data)
+        results = await asyncio.gather(*(self.send_to_subscription(s, payload) for s in subs))
+        sent = sum(1 for r in results if r)
+        failed = len(results) - sent
+        return {"sent": sent, "failed": failed, "total": len(subs)}
+
 
 webpush_service = WebPushService()
 
