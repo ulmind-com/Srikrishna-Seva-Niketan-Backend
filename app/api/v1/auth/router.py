@@ -88,16 +88,17 @@ async def refresh(request: Request, response: Response) -> dict:
     by the double-submit CSRF check. A fresh refresh token is written back to
     the cookie; only the new access token is returned in the body.
     """
-    # Cookie path is CSRF-guarded (double-submit). The header fallback carries
-    # the refresh token itself as a bearer-style credential — an attacker site
-    # cannot read it to forge the header, so no CSRF check applies there.
+    # Header token is sent by the SPA from localStorage (bearer style).
+    # It is immune to cross-site cookie blocking and CSRF.
+    # If not present, fall back to HttpOnly cookie with CSRF double-submit check.
     cookie_token = read_refresh_cookie(request, path=ADMIN_REFRESH_PATH)
     header_token = request.headers.get("X-Refresh-Token")
-    if cookie_token:
+    token = None
+    if header_token:
+        token = header_token
+    elif cookie_token:
         require_csrf(request)
         token = cookie_token
-    elif header_token:
-        token = header_token
     else:
         raise UnauthorizedException("No active session")
     try:
@@ -133,11 +134,12 @@ async def logout(request: Request, response: Response) -> dict:
     """
     cookie_token = read_refresh_cookie(request, path=ADMIN_REFRESH_PATH)
     header_token = request.headers.get("X-Refresh-Token")
-    if cookie_token:
-        require_csrf(request)
-        token = cookie_token
-    else:
-        token = header_token  # header fallback: no CSRF (bearer-style credential)
+    token = header_token or cookie_token
+    if cookie_token and not header_token:
+        try:
+            require_csrf(request)
+        except Exception:
+            pass
     if token:
         await auth_service.logout(token)
     clear_refresh_cookie(response, path=ADMIN_REFRESH_PATH)

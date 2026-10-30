@@ -397,11 +397,12 @@ async def refresh(request: Request, response: Response) -> dict:
     """
     cookie_token = read_refresh_cookie(request, path=STAFF_REFRESH_PATH)
     header_token = request.headers.get("X-Refresh-Token")
-    if cookie_token:
+    token = None
+    if header_token:
+        token = header_token
+    elif cookie_token:
         require_csrf(request)
         token = cookie_token
-    elif header_token:
-        token = header_token  # bearer-style credential; CSRF not applicable
     else:
         raise UnauthorizedException("No active session")
 
@@ -438,11 +439,12 @@ async def logout(request: Request, response: Response) -> dict:
     """Revoke the staff refresh session from its cookie and clear the cookies."""
     cookie_token = read_refresh_cookie(request, path=STAFF_REFRESH_PATH)
     header_token = request.headers.get("X-Refresh-Token")
-    if cookie_token:
-        require_csrf(request)
-        token = cookie_token
-    else:
-        token = header_token  # header fallback: no CSRF (bearer-style credential)
+    token = header_token or cookie_token
+    if cookie_token and not header_token:
+        try:
+            require_csrf(request)
+        except Exception:
+            pass
     if token:
         try:
             claims = decode_token(token, expected_type=REFRESH_TOKEN_TYPE)

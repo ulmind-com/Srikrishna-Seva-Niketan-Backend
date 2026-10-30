@@ -38,10 +38,11 @@ class Settings(BaseSettings):
     # ---- Security / JWT ----
     SECRET_KEY: str
     JWT_ALGORITHM: str = "HS256"
-    # Short-lived access token; the refresh token (below) keeps sessions alive.
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
-    REFRESH_TOKEN_EXPIRE_DAYS: int = 7
-    PASSWORD_RESET_EXPIRE_MINUTES: int = 30
+    # Long-lived persistent sessions (like Facebook / Instagram / Google):
+    # Access token valid for 30 days; refresh token valid for 180 days (6 months).
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 30  # 30 days (43,200 min)
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 180            # 180 days (6 months)
+    PASSWORD_RESET_EXPIRE_MINUTES: int = 60 * 24     # 24 hours
 
     # ---- Refresh-token cookies / CSRF ----
     # The refresh token is delivered in a Secure, HttpOnly cookie (never in the
