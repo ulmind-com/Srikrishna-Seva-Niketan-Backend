@@ -285,45 +285,60 @@ async def create_assignment(
     # Snapshot the destination point so routing stays stable:
     # 1. Explicit admin pin on the assignment takes first priority
     # 2. Customer's pinned coords if set
-    # 3. Geocode of the posting / customer address (best-effort)
+    # 3. Geocode of the posting / customer address (best-effort, max 1.5s timeout)
     if data.get("dest_lat") is not None and data.get("dest_lng") is not None:
         pass  # Admin confirmed coordinates supplied in payload
     elif customer.lat is not None and customer.lng is not None:
         data["dest_lat"], data["dest_lng"] = customer.lat, customer.lng
     else:
-        coords = await geo_service.geocode(data.get("address") or customer.address or "")
-        if coords is not None:
-            data["dest_lat"], data["dest_lng"] = coords
+        try:
+            coords = await asyncio.wait_for(
+                geo_service.geocode(data.get("address") or customer.address or ""),
+                timeout=1.5,
+            )
+            if coords is not None:
+                data["dest_lat"], data["dest_lng"] = coords
+        except Exception:
+            pass
 
     doc = await _assignments.create(data, actor)
 
     # Mark the staff member occupied.
     if doc.status in _OCCUPYING:
         await _set_employee_status(str(employee.id), EmployeeStatus.ASSIGNED)
-    # Notify the staff member in their own portal panel.
-    await notification_service.create(
-        title="New duty assignment",
-        message=f"You are assigned to {customer.name} ({_place_text(doc)}, {doc.shift} shift) from {doc.start_date.isoformat()}.",
-        type=NotificationType.ASSIGNMENT,
-        employee_id=str(employee.id),
-        reference_id=str(doc.id),
-    )
 
-    # Email the staff member their new posting (self-registered staff only have
-    # an email). A mail failure must never fail the assignment, so it is guarded.
-    if employee.email:
+    # Background task for portal notification, push notification, and transactional email
+    # so the HTTP response returns immediately (<100ms) to the admin.
+    async def _post_assignment_dispatches():
         try:
-            await email_service.send_assignment_notice(
-                to=employee.email,
-                staff_name=employee.name,
-                customer_name=customer.name,
-                shift=str(doc.shift),
-                place=_place_text(doc),
-                start_date=doc.start_date.isoformat(),
-                end_date=doc.end_date.isoformat() if doc.end_date else "Ongoing",
+            await notification_service.create(
+                title="New duty assignment",
+                message=f"You are assigned to {customer.name} ({_place_text(doc)}, {doc.shift} shift) from {doc.start_date.isoformat()}.",
+                type=NotificationType.ASSIGNMENT,
+                employee_id=str(employee.id),
+                reference_id=str(doc.id),
             )
-        except Exception:  # noqa: BLE001 — never block assignment on email
-            logger.warning("Assignment email failed", extra={"to": employee.email})
+        except Exception as err:
+            logger.warning("Assignment notification dispatch note: %s", err)
+
+        if employee.email:
+            try:
+                await email_service.send_assignment_notice(
+                    to=employee.email,
+                    staff_name=employee.name,
+                    customer_name=customer.name,
+                    shift=str(doc.shift),
+                    place=_place_text(doc),
+                    start_date=doc.start_date.isoformat(),
+                    end_date=doc.end_date.isoformat() if doc.end_date else "Ongoing",
+                )
+            except Exception as err:
+                logger.warning("Assignment email notice note: %s", err)
+
+    asyncio.create_task(_post_assignment_dispatches())
+
+    from app.services.dashboard_service import invalidate_dashboard_cache
+    invalidate_dashboard_cache()
 
     return item_response(AssignmentResponse, doc, "Staff assigned")
 

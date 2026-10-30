@@ -171,9 +171,9 @@ class BookingService:
         booking.status = BookingStatus.ASSIGNED
         booking.touch()
         await booking.save()
-        await notification_service.mark_read_by_reference(str(booking.id))
-        await self._audit(
-            ActivityAction.UPDATE, booking, actor, f"Assigned {staff_name}"
+        asyncio.create_task(notification_service.mark_read_by_reference(str(booking.id)))
+        asyncio.create_task(
+            self._audit(ActivityAction.UPDATE, booking, actor, f"Assigned {staff_name}")
         )
         return booking
 

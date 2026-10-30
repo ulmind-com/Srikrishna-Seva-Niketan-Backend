@@ -27,13 +27,13 @@ async def connect_to_mongo() -> AsyncIOMotorClient:
     logger.info("Connecting to MongoDB", extra={"db": settings.MONGODB_DB_NAME})
     _client = AsyncIOMotorClient(
         settings.MONGODB_URL,
-        maxPoolSize=25,
+        maxPoolSize=50,
         minPoolSize=2,
         maxIdleTimeMS=45_000,
         connectTimeoutMS=5_000,
         socketTimeoutMS=10_000,
         serverSelectionTimeoutMS=5_000,
-        waitQueueTimeoutMS=5_000,
+        waitQueueTimeoutMS=20_000,
         uuidRepresentation="standard",
     )
     _database = _client[settings.MONGODB_DB_NAME]
@@ -45,13 +45,23 @@ async def connect_to_mongo() -> AsyncIOMotorClient:
 
 
 async def init_database() -> None:
-    """Initialise Beanie with all document models (registers indexes)."""
+    """Initialise Beanie with all document models in fast mode (skip blocking index checks)."""
     if _database is None:
         await connect_to_mongo()
-    await init_beanie(database=_database, document_models=ALL_DOCUMENT_MODELS)
+    await init_beanie(database=_database, document_models=ALL_DOCUMENT_MODELS, skip_indexes=True)
     logger.info(
-        "Beanie initialised", extra={"models": len(ALL_DOCUMENT_MODELS)}
+        "Beanie initialised (fast startup)", extra={"models": len(ALL_DOCUMENT_MODELS)}
     )
+
+
+async def ensure_indexes_background() -> None:
+    """Register/ensure indexes in the background so server startup is instant (<200ms)."""
+    try:
+        if _database is not None:
+            await init_beanie(database=_database, document_models=ALL_DOCUMENT_MODELS, skip_indexes=False)
+            logger.info("Background MongoDB indexes verified successfully")
+    except Exception as exc:
+        logger.warning("Background index verification note: %s", exc)
 
 
 async def close_mongo_connection() -> None:

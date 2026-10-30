@@ -74,6 +74,16 @@ async def get_location(
     return item_response(LocationResponse, doc)
 
 
+def _invalidate_caches():
+    try:
+        from app.api.v1.staff_portal.router import _BRANCHES_CACHE, _BRANCH_MAP_CACHE
+        import app.api.v1.staff_portal.router as sp
+        sp._BRANCHES_CACHE = (0.0, [])
+        sp._BRANCH_MAP_CACHE.clear()
+    except Exception:
+        pass
+
+
 @router.post("", status_code=201, summary="Create location")
 async def create_location(
     payload: LocationCreate,
@@ -83,6 +93,7 @@ async def create_location(
     if not data.get("code"):
         data["code"] = await _unique_code(data.get("city") or data.get("name", ""))
     doc = await _locations.create(data, actor)
+    _invalidate_caches()
     return item_response(LocationResponse, doc, "Location created")
 
 
@@ -98,6 +109,7 @@ async def update_location(
     doc = await _locations.update(
         location_id, payload.model_dump(exclude_unset=True), actor
     )
+    _invalidate_caches()
     return item_response(LocationResponse, doc, "Location updated")
 
 
@@ -107,4 +119,5 @@ async def delete_location(
     actor: ActorContext = Depends(require_permission("locations", "delete")),
 ) -> dict:
     await _locations.delete(location_id, actor)
+    _invalidate_caches()
     return success_response(message="Location deleted")
