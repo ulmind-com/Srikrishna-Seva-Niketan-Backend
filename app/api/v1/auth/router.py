@@ -5,6 +5,16 @@ from typing import Optional
 from fastapi import APIRouter, BackgroundTasks, Depends, Request, Response
 
 from app.config import settings
+from app.core.cookies import (
+    ADMIN_REFRESH_PATH,
+    clear_csrf_cookie,
+    clear_refresh_cookie,
+    issue_csrf_cookie,
+    read_refresh_cookie,
+    require_csrf,
+    set_refresh_cookie,
+)
+from app.core.exceptions import UnauthorizedException
 from app.core.limiter import limiter
 from app.core.responses import success_response
 from app.dependencies.auth import (
@@ -18,8 +28,6 @@ from app.schemas.auth import (
     ChangePasswordRequest,
     ForgotPasswordRequest,
     LoginRequest,
-    LogoutRequest,
-    RefreshRequest,
     ResetPasswordRequest,
 )
 from app.schemas.user import ProfileUpdate, UserResponse
@@ -53,10 +61,12 @@ async def login(request: Request, response: Response, payload: LoginRequest) -> 
         ip_address=_client_ip(request),
         user_agent=request.headers.get("User-Agent"),
     )
+    # Refresh token goes only into a Secure, HttpOnly cookie — never the body.
+    set_refresh_cookie(response, refresh, path=ADMIN_REFRESH_PATH)
+    issue_csrf_cookie(response)
     return success_response(
         data={
             "access_token": access,
-            "refresh_token": refresh,
             "token_type": "bearer",
             "expires_in": settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
             "user": await _user_payload(user),
@@ -67,17 +77,33 @@ async def login(request: Request, response: Response, payload: LoginRequest) -> 
 
 @router.post("/refresh", summary="Refresh access token")
 @limiter.limit(settings.RATE_LIMIT_AUTH)
-async def refresh(request: Request, response: Response, payload: RefreshRequest) -> dict:
-    """Rotate a refresh token and issue a new access + refresh pair."""
-    access, refresh_token = await auth_service.refresh(
-        payload.refresh_token,
-        ip_address=_client_ip(request),
-        user_agent=request.headers.get("User-Agent"),
-    )
+async def refresh(request: Request, response: Response) -> dict:
+    """Rotate the refresh cookie and issue a new access token.
+
+    The refresh token is read from its HttpOnly cookie (not the body), guarded
+    by the double-submit CSRF check. A fresh refresh token is written back to
+    the cookie; only the new access token is returned in the body.
+    """
+    require_csrf(request)
+    token = read_refresh_cookie(request, path=ADMIN_REFRESH_PATH)
+    if not token:
+        raise UnauthorizedException("No active session")
+    try:
+        access, new_refresh = await auth_service.refresh(
+            token,
+            ip_address=_client_ip(request),
+            user_agent=request.headers.get("User-Agent"),
+        )
+    except UnauthorizedException:
+        # Session is gone/expired/revoked — drop the stale cookie so the client
+        # stops retrying and falls back to login.
+        clear_refresh_cookie(response, path=ADMIN_REFRESH_PATH)
+        raise
+    set_refresh_cookie(response, new_refresh, path=ADMIN_REFRESH_PATH)
+    issue_csrf_cookie(response)
     return success_response(
         data={
             "access_token": access,
-            "refresh_token": refresh_token,
             "token_type": "bearer",
             "expires_in": settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         },
@@ -86,12 +112,18 @@ async def refresh(request: Request, response: Response, payload: RefreshRequest)
 
 
 @router.post("/logout", summary="Logout (revoke refresh token)")
-async def logout(
-    payload: LogoutRequest,
-    _: User = Depends(get_current_active_user),
-) -> dict:
-    """Revoke the supplied refresh token and end its session."""
-    await auth_service.logout(payload.refresh_token)
+async def logout(request: Request, response: Response) -> dict:
+    """Revoke the refresh session (from its cookie) and clear the cookies.
+
+    CSRF-guarded but does not require a live access token, so a user whose
+    access token has already expired can still log out cleanly.
+    """
+    require_csrf(request)
+    token = read_refresh_cookie(request, path=ADMIN_REFRESH_PATH)
+    if token:
+        await auth_service.logout(token)
+    clear_refresh_cookie(response, path=ADMIN_REFRESH_PATH)
+    clear_csrf_cookie(response)
     return success_response(message="Logged out successfully")
 
 

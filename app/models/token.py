@@ -21,6 +21,11 @@ class RefreshToken(TimestampedDocument):
 
     jti: Indexed(str, unique=True)  # type: ignore[valid-type]
     user_id: str
+    # Which session family this token belongs to: ``None``/"admin" for admin
+    # User sessions, "staff" for self-service staff-portal (Employee) sessions.
+    # ``user_id`` then holds the Employee id. Lets the two flows share one
+    # collection while staying independently revocable.
+    scope: Optional[str] = None
     expires_at: dt.datetime
     revoked: bool = False
     revoked_at: Optional[dt.datetime] = None

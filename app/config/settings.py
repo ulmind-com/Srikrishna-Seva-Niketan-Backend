@@ -38,9 +38,25 @@ class Settings(BaseSettings):
     # ---- Security / JWT ----
     SECRET_KEY: str
     JWT_ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+    # Short-lived access token; the refresh token (below) keeps sessions alive.
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
     PASSWORD_RESET_EXPIRE_MINUTES: int = 30
+
+    # ---- Refresh-token cookies / CSRF ----
+    # The refresh token is delivered in a Secure, HttpOnly cookie (never in the
+    # response body or localStorage). Because the admin/staff SPAs and the API
+    # live on different sites (``*.vercel.app`` vs ``*.onrender.com``), the
+    # cookie must be ``SameSite=None; Secure`` to be sent on cross-site XHR, and
+    # CSRF is defended with a double-submit token (readable cookie echoed in a
+    # request header).
+    COOKIE_SECURE: bool = True
+    COOKIE_SAMESITE: str = "none"  # "none" | "lax" | "strict"
+    COOKIE_DOMAIN: str = ""  # empty => host-only cookie on the API's own domain
+    REFRESH_COOKIE_NAME: str = "ssn_refresh"
+    STAFF_REFRESH_COOKIE_NAME: str = "ssn_staff_refresh"
+    CSRF_COOKIE_NAME: str = "ssn_csrf"
+    CSRF_HEADER_NAME: str = "X-CSRF-Token"
 
     # ---- Database ----
     MONGODB_URL: str

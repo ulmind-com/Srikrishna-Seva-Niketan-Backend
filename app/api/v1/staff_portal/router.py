@@ -42,8 +42,18 @@ from app.core.exceptions import (
     NotFoundException,
     UnauthorizedException,
 )
+from app.core.cookies import (
+    STAFF_REFRESH_PATH,
+    clear_csrf_cookie,
+    clear_refresh_cookie,
+    issue_csrf_cookie,
+    read_refresh_cookie,
+    require_csrf,
+    set_refresh_cookie,
+)
 from app.core.limiter import limiter
 from app.core.responses import success_response
+from app.models.token import RefreshToken
 from app.services.notification_service import notification_service
 from app.core.security import (
     ACCESS_TOKEN_TYPE,
@@ -116,15 +126,30 @@ async def _unique_code() -> str:
     return "EMP-" + secrets.token_hex(4).upper()
 
 
-def _issue_tokens(staff: Employee) -> dict:
-    """Mint a staff-scoped access + refresh token pair."""
+async def _issue_session(response: Response, staff: Employee) -> dict:
+    """Mint a staff-scoped token pair, persist the refresh session, and set the
+    Secure/HttpOnly refresh cookie + CSRF cookie.
+
+    Returns the response body (access token only — the refresh token is
+    cookie-only and never serialised).
+    """
     staff_id = str(staff.id)
     claims = {"scope": STAFF_SCOPE, "email": staff.email}
     access, _, _ = create_access_token(staff_id, claims)
-    refresh, _, _ = create_refresh_token(staff_id, {"scope": STAFF_SCOPE})
+    refresh, jti, expires_at = create_refresh_token(staff_id, {"scope": STAFF_SCOPE})
+
+    # Persist the refresh jti so staff sessions are revocable (rotation/logout).
+    await RefreshToken(
+        jti=jti,
+        user_id=staff_id,
+        scope=STAFF_SCOPE,
+        expires_at=expires_at,
+    ).insert()
+
+    set_refresh_cookie(response, refresh, path=STAFF_REFRESH_PATH)
+    issue_csrf_cookie(response)
     return {
         "access_token": access,
-        "refresh_token": refresh,
         "token_type": "bearer",
         "expires_in": settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
     }
@@ -303,7 +328,7 @@ async def register(
             existing.touch()
             await existing.save()
             return success_response(
-                data={**_issue_tokens(existing), "staff": _profile(existing)},
+                data={**await _issue_session(response, existing), "staff": _profile(existing)},
                 message="Account resumed — complete your profile next",
             )
         raise ConflictException("An account with this email already exists")
@@ -323,7 +348,7 @@ async def register(
     await staff.insert()
 
     return success_response(
-        data={**_issue_tokens(staff), "staff": _profile(staff)},
+        data={**await _issue_session(response, staff), "staff": _profile(staff)},
         message="Account created — complete your profile next",
     )
 
@@ -351,27 +376,72 @@ async def login(
     await staff.save()
 
     return success_response(
-        data={**_issue_tokens(staff), "staff": _profile(staff)},
+        data={**await _issue_session(response, staff), "staff": _profile(staff)},
         message="Login successful",
     )
 
 
 @router.post("/refresh", summary="Refresh the staff access token")
-async def refresh(payload: dict) -> dict:
-    """Exchange a staff refresh token for a fresh token pair."""
-    token = (payload or {}).get("refresh_token")
-    if not token:
-        raise BadRequestException("refresh_token is required")
+@limiter.limit(settings.RATE_LIMIT_AUTH)
+async def refresh(request: Request, response: Response) -> dict:
+    """Rotate the staff refresh cookie and issue a new access token.
 
-    claims = decode_token(token, expected_type=REFRESH_TOKEN_TYPE)
+    Reads the refresh token from its HttpOnly cookie (CSRF-guarded), verifies
+    the persisted session is still valid, then rotates it: the old jti is
+    revoked and a fresh refresh cookie is set. Only the access token is
+    returned in the body.
+    """
+    require_csrf(request)
+    token = read_refresh_cookie(request, path=STAFF_REFRESH_PATH)
+    if not token:
+        raise UnauthorizedException("No active session")
+
+    try:
+        claims = decode_token(token, expected_type=REFRESH_TOKEN_TYPE)
+    except UnauthorizedException:
+        clear_refresh_cookie(response, path=STAFF_REFRESH_PATH)
+        raise
     if claims.get("scope") != STAFF_SCOPE:
+        clear_refresh_cookie(response, path=STAFF_REFRESH_PATH)
         raise UnauthorizedException("Invalid token scope")
+
+    jti = claims.get("jti", "")
+    stored = await RefreshToken.find_one({"jti": jti})
+    if stored is None or stored.revoked:
+        clear_refresh_cookie(response, path=STAFF_REFRESH_PATH)
+        raise UnauthorizedException("Session is no longer valid")
 
     staff = await Employee.get(claims.get("sub"))
     if staff is None or not staff.is_active:
+        clear_refresh_cookie(response, path=STAFF_REFRESH_PATH)
         raise UnauthorizedException("Account is no longer active")
 
-    return success_response(data=_issue_tokens(staff))
+    # Rotate: revoke the presented token, then issue a fresh session.
+    stored.revoked = True
+    stored.revoked_at = dt.datetime.now(dt.timezone.utc)
+    await stored.save()
+
+    return success_response(data=await _issue_session(response, staff))
+
+
+@router.post("/logout", summary="Staff logout (revoke refresh session)")
+async def logout(request: Request, response: Response) -> dict:
+    """Revoke the staff refresh session from its cookie and clear the cookies."""
+    require_csrf(request)
+    token = read_refresh_cookie(request, path=STAFF_REFRESH_PATH)
+    if token:
+        try:
+            claims = decode_token(token, expected_type=REFRESH_TOKEN_TYPE)
+            stored = await RefreshToken.find_one({"jti": claims.get("jti", "")})
+            if stored and not stored.revoked:
+                stored.revoked = True
+                stored.revoked_at = dt.datetime.now(dt.timezone.utc)
+                await stored.save()
+        except UnauthorizedException:
+            pass  # already invalid — nothing to revoke
+    clear_refresh_cookie(response, path=STAFF_REFRESH_PATH)
+    clear_csrf_cookie(response)
+    return success_response(message="Logged out successfully")
 
 
 @router.post("/google", summary="Sign in with Google (not configured yet)")

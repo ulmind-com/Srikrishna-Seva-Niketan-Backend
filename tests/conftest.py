@@ -16,6 +16,10 @@ os.environ.setdefault("MONGODB_DB_NAME", "nupun_health_test")
 os.environ.setdefault("CORS_ORIGINS", "*")
 os.environ.setdefault("FIRST_ADMIN_EMAIL", "admin@test.com")
 os.environ.setdefault("FIRST_ADMIN_PASSWORD", "Admin@12345")
+# Tests drive the app over http (ASGITransport), so Secure cookies would never
+# be sent back. Disable the Secure flag for the test environment only.
+os.environ.setdefault("COOKIE_SECURE", "false")
+os.environ.setdefault("COOKIE_SAMESITE", "lax")
 
 import pytest_asyncio
 from beanie import init_beanie
