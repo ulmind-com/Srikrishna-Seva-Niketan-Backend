@@ -105,8 +105,8 @@ class Settings(BaseSettings):
     CORS_ORIGINS: str = "*"
 
     # ---- Rate limiting ----
-    RATE_LIMIT_DEFAULT: str = "200/minute"
-    RATE_LIMIT_AUTH: str = "10/minute"
+    RATE_LIMIT_DEFAULT: str = "2000/minute"
+    RATE_LIMIT_AUTH: str = "300/minute"
 
     # ---- Frontend ----
     FRONTEND_URL: str = "http://localhost:3000"

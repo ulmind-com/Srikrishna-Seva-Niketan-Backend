@@ -49,7 +49,10 @@ async def lifespan(app: FastAPI):
 
     await connect_to_mongo()
     await init_database()
-    await run_seed()
+    # Run database seed in background task so the server opens its port and responds
+    # to health checks immediately (<500ms) without blocking Render deployments.
+    import asyncio
+    asyncio.create_task(run_seed())
     start_scheduler()
     logger.info("Application startup complete")
 

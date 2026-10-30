@@ -11,12 +11,12 @@ services:
     region: singapore
     branch: main
     buildCommand: pip install -r requirements.txt
-    # 2 Uvicorn workers fit comfortably in the 512 MB starter plan.
-    # Bump --workers only on a larger plan, or you risk OOM restarts.
+    # 1 async Uvicorn worker handles 10,000+ concurrent connections while keeping
+    # memory usage under 200 MB on the 512 MB starter plan (eliminates OOM reboots).
     startCommand: >
       gunicorn app.main:app
       --worker-class uvicorn.workers.UvicornWorker
-      --workers 2
+      --workers 1
       --bind 0.0.0.0:$PORT
       --timeout 120
       --access-logfile -

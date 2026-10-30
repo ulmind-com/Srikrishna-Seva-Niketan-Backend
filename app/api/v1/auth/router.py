@@ -80,7 +80,6 @@ async def login(request: Request, response: Response, payload: LoginRequest) -> 
 
 
 @router.post("/refresh", summary="Refresh access token")
-@limiter.limit(settings.RATE_LIMIT_AUTH)
 async def refresh(request: Request, response: Response) -> dict:
     """Rotate the refresh cookie and issue a new access token.
 
