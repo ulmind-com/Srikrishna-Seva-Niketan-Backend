@@ -752,18 +752,27 @@ async def my_assignments(
     filters: dict = {"employee_id": str(staff.id)}
     if pending:
         filters["acceptance_status"] = AcceptanceStatus.PENDING.value
+        filters["status"] = {"$nin": [AssignmentStatus.COMPLETED.value, AssignmentStatus.CANCELLED.value]}
     rows = await Assignment.find(filters).sort("-start_date").to_list()
     phones: dict[str, Optional[str]] = {}
-    for cid in {a.customer_id for a in rows}:
-        cust = await Customer.get(cid)
-        phones[cid] = cust.phone if cust else None
+    for cid in {a.customer_id for a in rows if a.customer_id}:
+        try:
+            cust = await Customer.get(cid)
+            phones[cid] = cust.phone if cust else None
+        except Exception:
+            phones[cid] = None
     items = [await _staff_item(a, phones.get(a.customer_id)) for a in rows]
     return success_response(data={"items": items, "total": len(items)})
 
 
 async def _customer_phone(a: Assignment) -> Optional[str]:
-    cust = await Customer.get(a.customer_id)
-    return cust.phone if cust else None
+    try:
+        if not a.customer_id:
+            return None
+        cust = await Customer.get(a.customer_id)
+        return cust.phone if cust else None
+    except Exception:
+        return None
 
 
 @router.post("/me/assignments/{assignment_id}/accept", summary="Accept a duty")
@@ -778,12 +787,16 @@ async def accept_assignment(
     a.decline_reason = None
     a.touch()
     await a.save()
-    await notification_service.create(
-        title="Duty accepted",
-        message=f"{a.employee_name} accepted {a.customer_name} ({_place_text(a)}).",
-        type=NotificationType.ASSIGNMENT,
-        link="/assignments",
-        reference_id=str(a.id),
+
+    # Background task so client response is instant (<20ms)
+    asyncio.create_task(
+        notification_service.create(
+            title="Duty accepted",
+            message=f"{a.employee_name} accepted {a.customer_name} ({_place_text(a)}).",
+            type=NotificationType.ASSIGNMENT,
+            link="/assignments",
+            reference_id=str(a.id),
+        )
     )
     return success_response(
         data=await _staff_item(a, await _customer_phone(a)), message="Duty accepted"
@@ -809,12 +822,16 @@ async def decline_assignment(
         staff.touch()
         await staff.save()
     reason = f" Reason: {payload.reason}." if payload.reason else ""
-    await notification_service.create(
-        title="Duty declined — reassign",
-        message=f"{a.employee_name} declined {a.customer_name} ({_place_text(a)}).{reason}",
-        type=NotificationType.ASSIGNMENT,
-        link="/assignments",
-        reference_id=str(a.id),
+
+    # Background task so client response is instant
+    asyncio.create_task(
+        notification_service.create(
+            title="Duty declined — reassign",
+            message=f"{a.employee_name} declined {a.customer_name} ({_place_text(a)}).{reason}",
+            type=NotificationType.ASSIGNMENT,
+            link="/assignments",
+            reference_id=str(a.id),
+        )
     )
     return success_response(
         data=await _staff_item(a, await _customer_phone(a)), message="Duty declined"
@@ -839,6 +856,7 @@ async def complete_assignment(
 
     now = dt.datetime.now(dt.timezone.utc)
     a.status = AssignmentStatus.COMPLETED
+    a.acceptance_status = AcceptanceStatus.ACCEPTED
     a.work_completed_at = now
 
     ptype = str(getattr(a, "payment_type", "prepaid"))
@@ -856,7 +874,7 @@ async def complete_assignment(
                     customer_name=a.customer_name,
                     assignment_id=str(a.id),
                     location_id=a.location_id,
-                    amount=a.customer_rate,
+                    amount=int(a.customer_rate),
                     mode=PaymentMode.CASH,
                     status=PaymentStatus.PAID,
                     date=now.date(),
@@ -882,12 +900,15 @@ async def complete_assignment(
         notif_msg = f"{staff.name} completed duty for {a.customer_name} (Prepaid)."
         notif_title = "Duty Completed"
 
-    await notification_service.create(
-        title=notif_title,
-        message=notif_msg,
-        type=NotificationType.ASSIGNMENT,
-        link="/assignments",
-        reference_id=str(a.id),
+    # Background task so client complete response returns in <30ms without waiting for WebPush
+    asyncio.create_task(
+        notification_service.create(
+            title=notif_title,
+            message=notif_msg,
+            type=NotificationType.ASSIGNMENT,
+            link="/assignments",
+            reference_id=str(a.id),
+        )
     )
 
     return success_response(

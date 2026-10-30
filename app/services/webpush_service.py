@@ -110,13 +110,14 @@ class WebPushService:
         ).count()
 
     def _sync_send(self, subscription_info: dict, payload_str: str) -> None:
-        """Synchronously execute webpush call."""
+        """Synchronously execute webpush call with strict timeout."""
         webpush(
             subscription_info=subscription_info,
             data=payload_str,
             vapid_private_key=self.private_key,
             vapid_claims=self.claims,
             ttl=86400,
+            timeout=3.5,
         )
 
     async def send_to_subscription(
@@ -138,11 +139,21 @@ class WebPushService:
         payload_str = json.dumps(payload)
 
         try:
-            await asyncio.to_thread(self._sync_send, subscription_info, payload_str)
+            await asyncio.wait_for(
+                asyncio.to_thread(self._sync_send, subscription_info, payload_str),
+                timeout=4.0,
+            )
             sub.last_pushed_at = dt.datetime.now(dt.timezone.utc)
             sub.failure_count = 0
             await sub.save()
             return True
+        except (asyncio.TimeoutError, TimeoutError):
+            logger.warning("WebPush delivery timed out after 4s", extra={"endpoint": sub.endpoint[:40]})
+            sub.failure_count += 1
+            if sub.failure_count >= 5:
+                sub.is_active = False
+            await sub.save()
+            return False
         except WebPushException as exc:
             # 404 Not Found or 410 Gone indicates the browser/endpoint is unregistered
             status_code = getattr(exc.response, "status_code", None) if hasattr(exc, "response") else None
