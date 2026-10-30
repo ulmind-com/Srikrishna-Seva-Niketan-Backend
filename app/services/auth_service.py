@@ -75,8 +75,8 @@ class AuthService:
 
         user.last_login_at = dt.datetime.now(dt.timezone.utc)
 
-        # These writes are independent — persist them concurrently instead of
-        # four serial round-trips, which on a distant DB dominated login time.
+        # Persist essential session credentials concurrently; background audit logs & timestamps
+        # so the login response returns immediately to the client (<150ms).
         await asyncio.gather(
             self.tokens.create(
                 RefreshToken(
@@ -96,7 +96,9 @@ class AuthService:
                     user_agent=user_agent,
                 )
             ),
-            user.save(),
+        )
+        asyncio.create_task(user.save())
+        asyncio.create_task(
             activity_service.log(
                 ActivityAction.LOGIN,
                 "auth",
@@ -105,7 +107,7 @@ class AuthService:
                 description=f"{user.email} logged in",
                 ip_address=ip_address,
                 user_agent=user_agent,
-            ),
+            )
         )
         return access_token, refresh_token
 

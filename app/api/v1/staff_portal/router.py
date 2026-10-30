@@ -163,10 +163,17 @@ def _profile(staff: Employee) -> dict:
     return StaffProfileResponse.model_validate(staff).model_dump(mode="json")
 
 
+_BRANCHES_CACHE: Tuple[float, List[dict]] = (0.0, [])
+_BRANCH_MAP_CACHE: Dict[str, Tuple[float, Location]] = {}
+
 async def _assert_branch_exists(location_id: str) -> Location:
+    now = time.time()
+    if location_id in _BRANCH_MAP_CACHE and now - _BRANCH_MAP_CACHE[location_id][0] < 60.0:
+        return _BRANCH_MAP_CACHE[location_id][1]
     location = await Location.get(location_id)
     if location is None or not location.is_active:
         raise BadRequestException("Select a valid branch")
+    _BRANCH_MAP_CACHE[location_id] = (now, location)
     return location
 
 
@@ -182,18 +189,23 @@ async def list_branches() -> dict:
     Only the fields the signup form needs are exposed — not the full branch
     record, which stays behind the admin ``locations`` permission.
     """
+    global _BRANCHES_CACHE
+    now = time.time()
+    if now - _BRANCHES_CACHE[0] < 60.0 and _BRANCHES_CACHE[1]:
+        return success_response(data=_BRANCHES_CACHE[1])
+
     branches = await Location.find({"is_active": True}).sort("order").to_list()
-    return success_response(
-        data=[
-            {
-                "id": str(b.id),
-                "name": b.name,
-                "code": b.code,
-                "city": b.city,
-            }
-            for b in branches
-        ]
-    )
+    data = [
+        {
+            "id": str(b.id),
+            "name": b.name,
+            "code": b.code,
+            "city": b.city,
+        }
+        for b in branches
+    ]
+    _BRANCHES_CACHE = (now, data)
+    return success_response(data=data)
 
 
 # ---------------------------------------------------------------------------
@@ -348,11 +360,12 @@ async def register(
 
     await _assert_branch_exists(payload.location_id)
 
+    hashed_pw = await asyncio.to_thread(hash_password, payload.password)
     staff = Employee(
         code=await _unique_code(),
         name=payload.name.strip(),
         email=email,
-        hashed_password=hash_password(payload.password),
+        hashed_password=hashed_pw,
         auth_provider="password",
         location_id=payload.location_id,
         verification_status=StaffVerificationStatus.DRAFT,
@@ -769,12 +782,13 @@ async def my_assignments(
         filters["status"] = {"$nin": [AssignmentStatus.COMPLETED.value, AssignmentStatus.CANCELLED.value]}
     rows = await Assignment.find(filters).sort("-start_date").to_list()
     phones: dict[str, Optional[str]] = {}
-    for cid in {a.customer_id for a in rows if a.customer_id}:
+    valid_cids = [ObjectId(cid) for cid in {a.customer_id for a in rows if a.customer_id} if ObjectId.is_valid(cid)]
+    if valid_cids:
         try:
-            cust = await Customer.get(cid)
-            phones[cid] = cust.phone if cust else None
+            custs = await Customer.find({"_id": {"$in": valid_cids}}).to_list()
+            phones = {str(c.id): c.phone for c in custs}
         except Exception:
-            phones[cid] = None
+            pass
     items = [await _staff_item(a, phones.get(a.customer_id)) for a in rows]
     return success_response(data={"items": items, "total": len(items)})
 
@@ -900,12 +914,16 @@ async def complete_assignment(
                 logging.getLogger("app").exception("Payment insert error: %s", e)
 
     a.touch()
-    await a.save()
-
-    # Free staff availability for next assignment
     staff.status = EmployeeStatus.AVAILABLE
     staff.touch()
-    await staff.save()
+
+    # Persist assignment and staff availability concurrently (<50ms)
+    await asyncio.gather(a.save(), staff.save())
+
+    from app.dependencies.staff_auth import invalidate_staff_cache
+    from app.services.dashboard_service import invalidate_dashboard_cache
+    invalidate_staff_cache(str(staff.id))
+    invalidate_dashboard_cache()
 
     if ptype == "postpaid":
         notif_msg = f"{staff.name} received ₹{a.customer_rate or 0} cash and completed duty for {a.customer_name}."

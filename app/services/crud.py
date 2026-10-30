@@ -75,7 +75,8 @@ class CrudService:
             )
         doc = self.model(**data)
         await self.repo.create(doc)
-        await self._audit(ActivityAction.CREATE, doc, actor)
+        import asyncio
+        asyncio.create_task(self._audit(ActivityAction.CREATE, doc, actor))
         return doc
 
     async def update(
@@ -89,14 +90,16 @@ class CrudService:
                     data["slug"], lambda s: self._slug_taken(s, exclude_id=doc_id)
                 )
         await self.repo.update(doc, data)
-        await self._audit(ActivityAction.UPDATE, doc, actor)
+        import asyncio
+        asyncio.create_task(self._audit(ActivityAction.UPDATE, doc, actor))
         return doc
 
     async def delete(self, doc_id: str, actor: ActorContext) -> None:
         """Delete a document by id."""
         doc = await self.get_or_404(doc_id)
         await self.repo.delete(doc)
-        await self._audit(ActivityAction.DELETE, doc, actor)
+        import asyncio
+        asyncio.create_task(self._audit(ActivityAction.DELETE, doc, actor))
 
     async def paginate(
         self,

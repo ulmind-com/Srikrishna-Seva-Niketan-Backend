@@ -24,7 +24,23 @@ from app.models.service import Service
 # In-memory short-lived cache so dashboard polling and concurrent widget calls
 # return in <1ms without hitting the database repeatedly.
 _STATS_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
-_STATS_CACHE_TTL = 8.0  # seconds
+_STATS_CACHE_TTL = 15.0  # seconds
+
+_BREAKDOWN_CACHE: Tuple[float, Dict[str, int]] = (0.0, {})
+_TREND_CACHE: Dict[int, Tuple[float, List[Dict[str, Any]]]] = {}
+_RECENT_BOOKINGS_CACHE: Dict[int, Tuple[float, List[Booking]]] = {}
+_RECENT_CONTACTS_CACHE: Dict[int, Tuple[float, List[ContactMessage]]] = {}
+_RECENT_APPS_CACHE: Dict[int, Tuple[float, List[JobApplication]]] = {}
+
+def invalidate_dashboard_cache() -> None:
+    """Clear all dashboard cache stores when records are created/updated."""
+    _STATS_CACHE.clear()
+    global _BREAKDOWN_CACHE
+    _BREAKDOWN_CACHE = (0.0, {})
+    _TREND_CACHE.clear()
+    _RECENT_BOOKINGS_CACHE.clear()
+    _RECENT_CONTACTS_CACHE.clear()
+    _RECENT_APPS_CACHE.clear()
 
 
 class DashboardService:
@@ -243,15 +259,25 @@ class DashboardService:
 
     async def booking_status_breakdown(self) -> Dict[str, int]:
         """Return a count per booking status (for a pie/donut chart)."""
+        global _BREAKDOWN_CACHE
+        now = time.time()
+        if now - _BREAKDOWN_CACHE[0] < 20.0 and _BREAKDOWN_CACHE[1]:
+            return _BREAKDOWN_CACHE[1]
+
         pipeline = [{"$group": {"_id": "$status", "count": {"$sum": 1}}}]
         result = await Booking.aggregate(pipeline).to_list()
         breakdown = {status.value: 0 for status in BookingStatus}
         for row in result:
             breakdown[row["_id"]] = row["count"]
+        _BREAKDOWN_CACHE = (now, breakdown)
         return breakdown
 
     async def bookings_trend(self, days: int = 30) -> List[Dict[str, Any]]:
         """Return a daily booking count for the last ``days`` days."""
+        now = time.time()
+        if days in _TREND_CACHE and now - _TREND_CACHE[days][0] < 60.0:
+            return _TREND_CACHE[days][1]
+
         since = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=days)
         pipeline = [
             {"$match": {"created_at": {"$gte": since}}},
@@ -266,20 +292,33 @@ class DashboardService:
             {"$sort": {"_id": 1}},
         ]
         result = await Booking.aggregate(pipeline).to_list()
-        return [{"date": row["_id"], "count": row["count"]} for row in result]
+        data = [{"date": row["_id"], "count": row["count"]} for row in result]
+        _TREND_CACHE[days] = (now, data)
+        return data
 
     async def recent_bookings(self, limit: int = 5) -> List[Booking]:
-        return await Booking.find({}).sort([("created_at", -1)]).limit(limit).to_list()
+        now = time.time()
+        if limit in _RECENT_BOOKINGS_CACHE and now - _RECENT_BOOKINGS_CACHE[limit][0] < 10.0:
+            return _RECENT_BOOKINGS_CACHE[limit][1]
+        items = await Booking.find({}).sort([("created_at", -1)]).limit(limit).to_list()
+        _RECENT_BOOKINGS_CACHE[limit] = (now, items)
+        return items
 
     async def recent_contacts(self, limit: int = 5) -> List[ContactMessage]:
-        return (
-            await ContactMessage.find({}).sort([("created_at", -1)]).limit(limit).to_list()
-        )
+        now = time.time()
+        if limit in _RECENT_CONTACTS_CACHE and now - _RECENT_CONTACTS_CACHE[limit][0] < 10.0:
+            return _RECENT_CONTACTS_CACHE[limit][1]
+        items = await ContactMessage.find({}).sort([("created_at", -1)]).limit(limit).to_list()
+        _RECENT_CONTACTS_CACHE[limit] = (now, items)
+        return items
 
     async def recent_applications(self, limit: int = 5) -> List[JobApplication]:
-        return (
-            await JobApplication.find({}).sort([("created_at", -1)]).limit(limit).to_list()
-        )
+        now = time.time()
+        if limit in _RECENT_APPS_CACHE and now - _RECENT_APPS_CACHE[limit][0] < 10.0:
+            return _RECENT_APPS_CACHE[limit][1]
+        items = await JobApplication.find({}).sort([("created_at", -1)]).limit(limit).to_list()
+        _RECENT_APPS_CACHE[limit] = (now, items)
+        return items
 
 
 dashboard_service = DashboardService()
