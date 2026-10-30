@@ -7,6 +7,7 @@ rotated and revoked, giving real session invalidation on top of stateless JWTs.
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 from typing import Optional, Tuple
 
@@ -47,7 +48,13 @@ class AuthService:
     async def authenticate(self, email: str, password: str) -> User:
         """Validate credentials and return the user, or raise 401."""
         user = await self.users.find_one({"email": email.lower().strip()})
-        if user is None or not verify_password(password, user.hashed_password):
+        # bcrypt is CPU-heavy (~250ms) and blocks the single async worker,
+        # serialising concurrent logins. Run it in a thread so the event loop
+        # keeps serving other requests.
+        password_ok = user is not None and await asyncio.to_thread(
+            verify_password, password, user.hashed_password
+        )
+        if user is None or not password_ok:
             raise UnauthorizedException("Invalid email or password")
         if not user.is_active:
             raise UnauthorizedException("Your account is disabled")
@@ -66,36 +73,39 @@ class AuthService:
         access_token, _, _ = create_access_token(user_id, claims)
         refresh_token, jti, expires_at = create_refresh_token(user_id)
 
-        await self.tokens.create(
-            RefreshToken(
-                jti=jti,
-                user_id=user_id,
-                expires_at=expires_at,
-                ip_address=ip_address,
-                user_agent=user_agent,
-            )
-        )
-        await self.sessions.create(
-            AdminSession(
+        user.last_login_at = dt.datetime.now(dt.timezone.utc)
+
+        # These writes are independent — persist them concurrently instead of
+        # four serial round-trips, which on a distant DB dominated login time.
+        await asyncio.gather(
+            self.tokens.create(
+                RefreshToken(
+                    jti=jti,
+                    user_id=user_id,
+                    expires_at=expires_at,
+                    ip_address=ip_address,
+                    user_agent=user_agent,
+                )
+            ),
+            self.sessions.create(
+                AdminSession(
+                    user_id=user_id,
+                    user_email=user.email,
+                    refresh_token_jti=jti,
+                    ip_address=ip_address,
+                    user_agent=user_agent,
+                )
+            ),
+            user.save(),
+            activity_service.log(
+                ActivityAction.LOGIN,
+                "auth",
                 user_id=user_id,
                 user_email=user.email,
-                refresh_token_jti=jti,
+                description=f"{user.email} logged in",
                 ip_address=ip_address,
                 user_agent=user_agent,
-            )
-        )
-
-        user.last_login_at = dt.datetime.now(dt.timezone.utc)
-        await user.save()
-
-        await activity_service.log(
-            ActivityAction.LOGIN,
-            "auth",
-            user_id=user_id,
-            user_email=user.email,
-            description=f"{user.email} logged in",
-            ip_address=ip_address,
-            user_agent=user_agent,
+            ),
         )
         return access_token, refresh_token
 

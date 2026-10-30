@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 from typing import Any, Dict, List, Optional
 
@@ -35,47 +36,35 @@ class DashboardService:
 
         scope: Dict[str, Any] = {"location_id": {"$in": location_ids}} if is_scoped else {}
 
-        # Branch information for scoped session
-        branch_names: List[str] = []
-        if is_scoped:
+        # Branch-name lookup (scoped) and the active-location list (super admin)
+        # are wrapped so they can be fired alongside every other query below.
+        async def _branch_names() -> List[str]:
+            if not is_scoped:
+                return []
             valid_ids = [ObjectId(x) for x in location_ids if ObjectId.is_valid(x)]
             locations = await Location.find({"_id": {"$in": valid_ids}}).to_list()
-            branch_names = [loc.name for loc in locations]
+            return [loc.name for loc in locations]
 
-        # Staff metrics (koto stuff ache, koto stuff kaj korche)
-        total_staff = await Employee.find(scope).count()
-        working_staff = await Employee.find({**scope, "status": "assigned"}).count()
-        available_staff = await Employee.find({**scope, "status": "available"}).count()
-        on_leave_staff = await Employee.find({**scope, "status": "on_leave"}).count()
-        verified_staff = await Employee.find({**scope, "verification_status": "verified"}).count()
-        pending_staff = await Employee.find({**scope, "verification_status": "pending"}).count()
+        async def _all_locs() -> List[Any]:
+            if is_scoped:
+                return []
+            return await Location.find({"is_active": True}).sort("order").to_list()
 
-        # Active assignments / shifts
-        active_assignments = await Assignment.find(
-            {**scope, "status": {"$in": ["scheduled", "active"]}}
-        ).count()
-
-        # Active customers
-        active_customers = await Customer.find({**scope, "is_active": True}).count()
-
-        # Revenue & expense — assignment-driven, matching the P&L report:
-        # contract amounts in, staff payout + other engagement cost + the
-        # standalone expense ledger out.
-        all_assignments = await Assignment.find(
-            {**scope, "status": {"$ne": "cancelled"}}
-        ).to_list()
-        total_revenue = sum(a.customer_rate or 0 for a in all_assignments)
-        assignment_cost = sum(
-            (a.employee_payout or 0) + (a.other_expense or 0)
-            for a in all_assignments
-        )
-        paid_expenses = await Expense.find(scope).to_list()
-        total_expense = assignment_cost + sum(e.amount for e in paid_expenses)
-        profit = total_revenue - total_expense
-        payment_count = len(all_assignments)
-
-        # Organization-level counts
+        # Every query here is independent, so fire them concurrently on the
+        # connection pool instead of awaiting ~20 round-trips one by one. With a
+        # distant DB this is the difference between ~15s and ~1s per load.
         (
+            branch_names,
+            total_staff,
+            working_staff,
+            available_staff,
+            on_leave_staff,
+            verified_staff,
+            pending_staff,
+            active_assignments,
+            active_customers,
+            all_assignments,
+            paid_expenses,
             total_bookings,
             pending_bookings,
             approved_bookings,
@@ -86,41 +75,72 @@ class DashboardService:
             total_applications,
             new_contacts,
             total_blogs,
-        ) = (
-            await Booking.find({}).count(),
-            await Booking.find({"status": BookingStatus.PENDING}).count(),
-            await Booking.find({"status": BookingStatus.APPROVED}).count(),
-            await Booking.find({"status": BookingStatus.COMPLETED}).count(),
-            await Service.find({}).count(),
-            await Equipment.find({}).count(),
-            await EquipmentRental.find({}).count(),
-            await JobApplication.find({}).count(),
-            await ContactMessage.find({"status": "new"}).count(),
-            await Blog.find({}).count(),
+            all_locs,
+        ) = await asyncio.gather(
+            _branch_names(),
+            Employee.find(scope).count(),
+            Employee.find({**scope, "status": "assigned"}).count(),
+            Employee.find({**scope, "status": "available"}).count(),
+            Employee.find({**scope, "status": "on_leave"}).count(),
+            Employee.find({**scope, "verification_status": "verified"}).count(),
+            Employee.find({**scope, "verification_status": "pending"}).count(),
+            Assignment.find({**scope, "status": {"$in": ["scheduled", "active"]}}).count(),
+            Customer.find({**scope, "is_active": True}).count(),
+            # Revenue & expense — assignment-driven, matching the P&L report:
+            # contract amounts in, staff payout + other engagement cost + the
+            # standalone expense ledger out.
+            Assignment.find({**scope, "status": {"$ne": "cancelled"}}).to_list(),
+            Expense.find(scope).to_list(),
+            Booking.find({}).count(),
+            Booking.find({"status": BookingStatus.PENDING}).count(),
+            Booking.find({"status": BookingStatus.APPROVED}).count(),
+            Booking.find({"status": BookingStatus.COMPLETED}).count(),
+            Service.find({}).count(),
+            Equipment.find({}).count(),
+            EquipmentRental.find({}).count(),
+            JobApplication.find({}).count(),
+            ContactMessage.find({"status": "new"}).count(),
+            Blog.find({}).count(),
+            _all_locs(),
         )
 
-        # Per-branch rollup for Super Admin
+        total_revenue = sum(a.customer_rate or 0 for a in all_assignments)
+        assignment_cost = sum(
+            (a.employee_payout or 0) + (a.other_expense or 0)
+            for a in all_assignments
+        )
+        total_expense = assignment_cost + sum(e.amount for e in paid_expenses)
+        profit = total_revenue - total_expense
+        payment_count = len(all_assignments)
+
+        # Per-branch rollup for Super Admin — each branch's 3 queries run
+        # concurrently, and all branches are rolled up in parallel too (no N+1
+        # serial loop).
         branches_summary: List[Dict[str, Any]] = []
-        if not is_scoped:
-            all_locs = await Location.find({"is_active": True}).sort("order").to_list()
-            for loc in all_locs:
+        if not is_scoped and all_locs:
+            async def _branch_row(loc: Any) -> Dict[str, Any]:
                 loc_id = str(loc.id)
                 loc_scope = {"location_id": loc_id}
-                b_staff = await Employee.find(loc_scope).count()
-                b_working = await Employee.find({**loc_scope, "status": "assigned"}).count()
-                b_assignments = await Assignment.find(
-                    {**loc_scope, "status": {"$ne": "cancelled"}}
-                ).to_list()
-                b_rev = sum(a.customer_rate or 0 for a in b_assignments)
-                branches_summary.append({
+                b_staff, b_working, b_assignments = await asyncio.gather(
+                    Employee.find(loc_scope).count(),
+                    Employee.find({**loc_scope, "status": "assigned"}).count(),
+                    Assignment.find(
+                        {**loc_scope, "status": {"$ne": "cancelled"}}
+                    ).to_list(),
+                )
+                return {
                     "id": loc_id,
                     "name": loc.name,
                     "code": loc.code,
                     "city": loc.city,
                     "total_staff": b_staff,
                     "working_staff": b_working,
-                    "revenue": b_rev,
-                })
+                    "revenue": sum(a.customer_rate or 0 for a in b_assignments),
+                }
+
+            branches_summary = list(
+                await asyncio.gather(*[_branch_row(loc) for loc in all_locs])
+            )
 
         return {
             "is_scoped": is_scoped,
