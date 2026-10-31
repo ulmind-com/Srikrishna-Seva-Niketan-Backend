@@ -32,11 +32,14 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
     CMD curl -fsS http://localhost:8000/health || exit 1
 
-# Gunicorn with Uvicorn workers for production concurrency.
+# Gunicorn with a single async Uvicorn worker. One uvloop worker gives
+# event-loop concurrency across requests while staying under ~180MB — four
+# workers OOM-SIGKILL on the 512MB instance. Override with WEB_CONCURRENCY.
 CMD ["gunicorn", "app.main:app", \
      "--worker-class", "uvicorn.workers.UvicornWorker", \
-     "--workers", "4", \
+     "--workers", "1", \
      "--bind", "0.0.0.0:8000", \
      "--timeout", "120", \
+     "--graceful-timeout", "30", \
      "--access-logfile", "-", \
      "--error-logfile", "-"]
