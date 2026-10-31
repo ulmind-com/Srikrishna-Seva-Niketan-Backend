@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import csv
 import io
 import re
@@ -137,6 +138,12 @@ class BookingService:
     ) -> Booking:
         """Transition a booking to a new status with validation."""
         booking = await self.get_or_404(booking_id, actor)
+
+        terminal = {BookingStatus.COMPLETED, BookingStatus.CANCELLED, BookingStatus.REJECTED}
+        if booking.status in terminal and status != booking.status:
+            raise BadRequestException(
+                f"Booking is already {booking.status} and cannot be changed"
+            )
 
         booking.status = status
         if reason:

@@ -8,6 +8,7 @@ thin, declarative layer (DRY + SRP).
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Type, TypeVar
 
 from beanie import Document
