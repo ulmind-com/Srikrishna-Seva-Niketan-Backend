@@ -41,7 +41,7 @@ import urllib.request
 from typing import Any, Optional
 
 API_URL = os.environ.get(
-    "API_URL", "https://srikrishna-seva-niketan-backend-y3fe.onrender.com/api/v1"
+    "API_URL", "https://srikrishna-seva-niketan-backend-99zi.onrender.com/api/v1"
 )
 
 CREDENTIALS_FILE = "manager-credentials.txt"
