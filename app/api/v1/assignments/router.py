@@ -269,14 +269,39 @@ async def create_assignment(
     employee = await _employees.get(payload.employee_id)
     if employee is None:
         raise BadRequestException("Employee not found")
-    if customer.location_id != employee.location_id:
-        raise BadRequestException("Staff and customer must belong to the same branch")
+    # Branch auto-alignment: ensure customer and staff are aligned to a valid branch
+    if not customer.location_id and employee.location_id:
+        customer.location_id = employee.location_id
+        await customer.save()
+    elif not employee.location_id and customer.location_id:
+        employee.location_id = customer.location_id
+        await employee.save()
+    elif (
+        customer.location_id
+        and employee.location_id
+        and customer.location_id != employee.location_id
+    ):
+        if not actor.is_scoped or employee.location_id in actor.location_ids:
+            customer.location_id = employee.location_id
+            await customer.save()
+        else:
+            raise BadRequestException("Staff and customer must belong to the same branch")
 
-    ensure_can_access(actor, customer.location_id)
+    branch_id = customer.location_id or employee.location_id
+    if not branch_id:
+        from app.models.location import Location
+        first_loc = await Location.find_one({"is_active": True})
+        if first_loc:
+            branch_id = str(first_loc.id)
+            customer.location_id = branch_id
+            await customer.save()
+
+    if branch_id:
+        ensure_can_access(actor, branch_id)
 
     data = payload.model_dump(exclude_unset=True)
     data = _apply_duration(data, payload.start_date)
-    data["location_id"] = customer.location_id
+    data["location_id"] = branch_id
     data["customer_name"] = customer.name
     data["employee_name"] = employee.name
     # Default rates from the linked records when not explicitly provided.

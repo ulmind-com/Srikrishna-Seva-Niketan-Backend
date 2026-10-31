@@ -173,6 +173,7 @@ class PaymentStatus(StrEnum):
     PENDING = "pending"
     PARTIAL = "partial"
     PAID = "paid"
+    RECEIVED = "received"
 
 
 class PaymentType(StrEnum):

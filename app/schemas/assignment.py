@@ -144,7 +144,7 @@ class AssignmentResponse(IdTimestampSchema):
     customer_name: str
     employee_id: str
     employee_name: str
-    location_id: str
+    location_id: Optional[str] = None
     place_type: AssignmentPlace = AssignmentPlace.HOME
     place_name: Optional[str] = None
     address: Optional[str] = None
