@@ -212,44 +212,56 @@ async def staff_stats_by_location(
     if actor.is_scoped:
         locations = [loc for loc in locations if str(loc.id) in actor.location_ids]
 
+    # Roll up every per-branch count in two server-side aggregations instead of
+    # ~8 count queries + a full payments load per branch (the old N+1 that took
+    # tens of seconds and blocked the single worker's event loop).
+    V = StaffVerificationStatus
+    emp_rows = await Employee.aggregate(
+        [
+            {
+                "$group": {
+                    "_id": "$location_id",
+                    "total": {"$sum": 1},
+                    "working": {"$sum": {"$cond": [{"$eq": ["$status", "assigned"]}, 1, 0]}},
+                    "available": {"$sum": {"$cond": [{"$eq": ["$status", "available"]}, 1, 0]}},
+                    "verified": {"$sum": {"$cond": [{"$eq": ["$verification_status", V.VERIFIED.value]}, 1, 0]}},
+                    "pending": {"$sum": {"$cond": [{"$eq": ["$verification_status", V.PENDING.value]}, 1, 0]}},
+                    "rejected": {"$sum": {"$cond": [{"$eq": ["$verification_status", V.REJECTED.value]}, 1, 0]}},
+                    "draft": {"$sum": {"$cond": [{"$eq": ["$verification_status", V.DRAFT.value]}, 1, 0]}},
+                    "active": {"$sum": {"$cond": ["$is_active", 1, 0]}},
+                }
+            }
+        ]
+    ).to_list()
+    emp_map = {r["_id"]: r for r in emp_rows if r.get("_id")}
+
+    pay_rows = await Payment.aggregate(
+        [
+            {"$match": {"status": {"$ne": "pending"}}},
+            {"$group": {"_id": "$location_id", "revenue": {"$sum": "$amount"}}},
+        ]
+    ).to_list()
+    rev_map = {r["_id"]: r.get("revenue", 0) for r in pay_rows if r.get("_id")}
+
     stats: list[dict] = []
     for loc in locations:
         loc_id = str(loc.id)
-        base = {"location_id": loc_id}
-
-        async def _count(extra: dict) -> int:
-            return await Employee.find({**base, **extra}).count()
-
-        working = await _count({"status": "assigned"})
-        available = await _count({"status": "available"})
-        payments = await Payment.find(
-            {"location_id": loc_id, "status": {"$ne": "pending"}}
-        ).to_list()
-        revenue = float(sum(p.amount for p in payments))
-
+        e = emp_map.get(loc_id, {})
         stats.append(
             LocationStaffStat(
                 location_id=loc_id,
                 location_name=loc.name,
                 location_code=loc.code,
                 city=loc.city,
-                total=await Employee.find(base).count(),
-                verified=await _count(
-                    {"verification_status": StaffVerificationStatus.VERIFIED.value}
-                ),
-                pending=await _count(
-                    {"verification_status": StaffVerificationStatus.PENDING.value}
-                ),
-                rejected=await _count(
-                    {"verification_status": StaffVerificationStatus.REJECTED.value}
-                ),
-                draft=await _count(
-                    {"verification_status": StaffVerificationStatus.DRAFT.value}
-                ),
-                active=await _count({"is_active": True}),
-                working=working,
-                available=available,
-                revenue=revenue,
+                total=e.get("total", 0),
+                verified=e.get("verified", 0),
+                pending=e.get("pending", 0),
+                rejected=e.get("rejected", 0),
+                draft=e.get("draft", 0),
+                active=e.get("active", 0),
+                working=e.get("working", 0),
+                available=e.get("available", 0),
+                revenue=float(rev_map.get(loc_id, 0)),
             ).model_dump(mode="json")
         )
 

@@ -8,15 +8,18 @@ Produces the four operational reports described in the client's notes:
 
 All queries are location-scoped via a caller-supplied ``scope`` filter
 (``ActorContext.scope_filter()``), so managers only ever see their branches.
-Aggregations are done in Python over bounded result sets (hundreds of rows),
-keeping the code simple and readable.
+Aggregations run server-side as MongoDB pipelines (``$group`` / ``$facet``)
+rather than loading whole collections into memory and summing in Python — this
+keeps the single async worker's event loop and the 512 MB box responsive even
+when every report widget on the admin dashboard fires at once.
 """
 
 from __future__ import annotations
 
 import datetime as dt
-from collections import defaultdict
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
+
+from bson import ObjectId
 
 from app.models.assignment import Assignment
 from app.models.customer import Customer
@@ -47,6 +50,22 @@ def _merge(*filters: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     return out
 
 
+def _object_ids(ids: Any) -> List[ObjectId]:
+    """Convert an iterable of string ids to valid ObjectIds, dropping bad ones."""
+    return [ObjectId(x) for x in ids if x and ObjectId.is_valid(x)]
+
+
+def _iso_date(value: Any) -> Optional[str]:
+    """Render a BSON datetime/date ``$max`` result as ``YYYY-MM-DD``."""
+    if value is None:
+        return None
+    if isinstance(value, dt.datetime):
+        return value.date().isoformat()
+    if isinstance(value, dt.date):
+        return value.isoformat()
+    return str(value)
+
+
 async def profit_loss(
     scope: Dict[str, Any],
     start: Optional[dt.date] = None,
@@ -62,46 +81,94 @@ async def profit_loss(
     """
     date_rng = _date_bounds(start, end)
 
-    # ---- Engagements: contract revenue, staff payout, other engagement cost ----
-    assign_filter = _merge(
-        scope, {"start_date": date_rng} if date_rng else None
+    # ---- Engagements: contract revenue, staff payout, payslips (server-side) ----
+    assign_match = _merge(
+        scope,
+        {"start_date": date_rng} if date_rng else None,
+        {"status": {"$ne": AssignmentStatus.CANCELLED.value}},
     )
-    assignments = await Assignment.find(assign_filter).to_list()
+    assign_agg = await Assignment.aggregate(
+        [
+            {"$match": assign_match},
+            {
+                "$facet": {
+                    "totals": [
+                        {
+                            "$group": {
+                                "_id": None,
+                                "revenue": {"$sum": {"$ifNull": ["$customer_rate", 0]}},
+                                "staff_payout": {"$sum": {"$ifNull": ["$employee_payout", 0]}},
+                                "assignment_other": {"$sum": {"$ifNull": ["$other_expense", 0]}},
+                                "count": {"$sum": 1},
+                            }
+                        }
+                    ],
+                    "payslips": [
+                        {"$match": {"employee_payout": {"$gt": 0}}},
+                        {
+                            "$group": {
+                                "_id": "$employee_id",
+                                "employee_name": {"$first": "$employee_name"},
+                                "total_payout": {"$sum": "$employee_payout"},
+                                "engagements": {"$sum": 1},
+                            }
+                        },
+                        {"$sort": {"total_payout": -1}},
+                    ],
+                }
+            },
+        ]
+    ).to_list()
 
-    revenue = 0
-    staff_payout = 0
-    assignment_other = 0
-    payslips: Dict[str, Dict[str, Any]] = {}
-    for a in assignments:
-        if a.status == AssignmentStatus.CANCELLED:
-            continue
-        revenue += a.customer_rate or 0
-        staff_payout += a.employee_payout or 0
-        assignment_other += a.other_expense or 0
-        if a.employee_payout:
-            slip = payslips.setdefault(
-                a.employee_id,
-                {
-                    "employee_id": a.employee_id,
-                    "employee_name": a.employee_name,
-                    "total_payout": 0,
-                    "engagements": 0,
-                },
-            )
-            slip["total_payout"] += a.employee_payout
-            slip["engagements"] += 1
+    facet = assign_agg[0] if assign_agg else {}
+    totals = (facet.get("totals") or [{}])[0]
+    revenue = totals.get("revenue", 0)
+    staff_payout = totals.get("staff_payout", 0)
+    assignment_other = totals.get("assignment_other", 0)
+    assignment_count = totals.get("count", 0)
+    payslips = [
+        {
+            "employee_id": r["_id"],
+            "employee_name": r.get("employee_name"),
+            "total_payout": r["total_payout"],
+            "engagements": r["engagements"],
+        }
+        for r in facet.get("payslips", [])
+    ]
 
     # ---- Standalone expenses ledger (rent, utilities, etc.) ----
-    exp_filter = _merge(scope, {"date": date_rng} if date_rng else None)
-    expenses = await Expense.find(exp_filter).to_list()
-    general_expense = sum(e.amount for e in expenses)
-    expense_by_category: Dict[str, int] = defaultdict(int)
-    for e in expenses:
-        expense_by_category[e.category] += e.amount
+    exp_match = _merge(scope, {"date": date_rng} if date_rng else None)
+    exp_agg = await Expense.aggregate(
+        [
+            {"$match": exp_match},
+            {
+                "$facet": {
+                    "totals": [
+                        {"$group": {"_id": None, "total": {"$sum": "$amount"}, "count": {"$sum": 1}}}
+                    ],
+                    "by_category": [
+                        {"$group": {"_id": "$category", "total": {"$sum": "$amount"}}}
+                    ],
+                }
+            },
+        ]
+    ).to_list()
+
+    efacet = exp_agg[0] if exp_agg else {}
+    etotals = (efacet.get("totals") or [{}])[0]
+    general_expense = etotals.get("total", 0)
+    expense_count = etotals.get("count", 0)
+    expense_by_category: Dict[str, int] = {
+        r["_id"]: r["total"] for r in efacet.get("by_category", [])
+    }
     if staff_payout:
-        expense_by_category["staff payout"] += staff_payout
+        expense_by_category["staff payout"] = (
+            expense_by_category.get("staff payout", 0) + staff_payout
+        )
     if assignment_other:
-        expense_by_category["engagement expense"] += assignment_other
+        expense_by_category["engagement expense"] = (
+            expense_by_category.get("engagement expense", 0) + assignment_other
+        )
 
     total_expense = staff_payout + assignment_other + general_expense
     profit = revenue - total_expense
@@ -115,38 +182,62 @@ async def profit_loss(
         "expense": total_expense,
         "profit": profit,
         "margin_pct": round(profit / revenue * 100) if revenue else 0,
-        "expense_by_category": dict(expense_by_category),
-        "assignment_count": sum(
-            1 for a in assignments if a.status != AssignmentStatus.CANCELLED
-        ),
-        "expense_count": len(expenses),
-        "payslips": sorted(
-            payslips.values(), key=lambda s: s["total_payout"], reverse=True
-        ),
+        "expense_by_category": expense_by_category,
+        "assignment_count": assignment_count,
+        "expense_count": expense_count,
+        "payslips": payslips,
     }
 
 
 async def distribution(scope: Dict[str, Any]) -> Dict[str, Any]:
     """Which staff are assigned to which customers, plus free staff."""
-    occupying = {AssignmentStatus.SCHEDULED, AssignmentStatus.ACTIVE}
-    assignments = await Assignment.find(_merge(scope)).to_list()
-    customers = await Customer.find(_merge(scope)).to_list()
-    employees = await Employee.find(_merge(scope)).to_list()
+    occupying = [AssignmentStatus.SCHEDULED.value, AssignmentStatus.ACTIVE.value]
 
-    cust_by_id = {str(c.id): c for c in customers}
-    staff_by_customer: Dict[str, list] = defaultdict(list)
+    # Group occupying engagements per customer, server-side.
+    grouped = await Assignment.aggregate(
+        [
+            {"$match": _merge(scope, {"status": {"$in": occupying}})},
+            {
+                "$group": {
+                    "_id": "$customer_id",
+                    "staff": {
+                        "$push": {
+                            "employee_id": "$employee_id",
+                            "employee_name": "$employee_name",
+                            "shift": "$shift",
+                        }
+                    },
+                    "employee_ids": {"$addToSet": "$employee_id"},
+                }
+            },
+        ]
+    ).to_list()
+
     assigned_employee_ids: set[str] = set()
-    for a in assignments:
-        if a.status not in occupying:
-            continue
-        assigned_employee_ids.add(a.employee_id)
-        staff_by_customer[a.customer_id].append(
-            {"employee_id": a.employee_id, "employee_name": a.employee_name, "shift": str(a.shift)}
-        )
+    for g in grouped:
+        assigned_employee_ids.update(eid for eid in g.get("employee_ids", []) if eid)
+
+    # Fetch only the customers actually referenced (not the whole collection).
+    referenced_ids = [g["_id"] for g in grouped if g.get("_id")]
+    cust_docs = (
+        await Customer.find({"_id": {"$in": _object_ids(referenced_ids)}}).to_list()
+        if referenced_ids
+        else []
+    )
+    cust_by_id = {str(c.id): c for c in cust_docs}
 
     rows = []
-    for cid, staff in staff_by_customer.items():
+    for g in grouped:
+        cid = g["_id"]
         c = cust_by_id.get(cid)
+        staff = [
+            {
+                "employee_id": s["employee_id"],
+                "employee_name": s["employee_name"],
+                "shift": str(s["shift"]),
+            }
+            for s in g.get("staff", [])
+        ]
         rows.append(
             {
                 "customer_id": cid,
@@ -159,15 +250,22 @@ async def distribution(scope: Dict[str, Any]) -> Dict[str, Any]:
         )
     rows.sort(key=lambda r: r["customer_name"].lower())
 
+    total_staff = await Employee.find(_merge(scope)).count()
+    total_customers = await Customer.find(_merge(scope)).count()
+
+    # Free staff = AVAILABLE employees in scope not currently assigned.
+    free_docs = await Employee.find(
+        _merge(scope, {"status": EmployeeStatus.AVAILABLE.value})
+    ).to_list()
     free_staff = [
         {"employee_id": str(e.id), "name": e.name, "phone": e.phone, "category": e.category}
-        for e in employees
-        if str(e.id) not in assigned_employee_ids and e.status == EmployeeStatus.AVAILABLE
+        for e in free_docs
+        if str(e.id) not in assigned_employee_ids
     ]
 
     return {
-        "total_staff": len(employees),
-        "total_customers": len(customers),
+        "total_staff": total_staff,
+        "total_customers": total_customers,
         "assigned_staff": len(assigned_employee_ids),
         "free_staff_count": len(free_staff),
         "customers": rows,
@@ -177,9 +275,41 @@ async def distribution(scope: Dict[str, Any]) -> Dict[str, Any]:
 
 async def customer_payments(scope: Dict[str, Any]) -> Dict[str, Any]:
     """Per-customer paid totals and pending dues."""
-    customers = await Customer.find(_merge(scope)).to_list()
-    payments = await Payment.find(_merge(scope)).to_list()
+    # Group payments per customer server-side (paid vs pending, last payment).
+    pay_rows = await Payment.aggregate(
+        [
+            {"$match": _merge(scope)},
+            {
+                "$group": {
+                    "_id": "$customer_id",
+                    "customer_name": {"$first": "$customer_name"},
+                    "total_paid": {
+                        "$sum": {
+                            "$cond": [
+                                {"$ne": ["$status", PaymentStatus.PENDING.value]},
+                                "$amount",
+                                0,
+                            ]
+                        }
+                    },
+                    "pending": {
+                        "$sum": {
+                            "$cond": [
+                                {"$eq": ["$status", PaymentStatus.PENDING.value]},
+                                "$amount",
+                                0,
+                            ]
+                        }
+                    },
+                    "payment_count": {"$sum": 1},
+                    "last_payment": {"$max": "$date"},
+                }
+            },
+        ]
+    ).to_list()
 
+    # Seed every in-scope customer so zero-payment customers still appear.
+    customers = await Customer.find(_merge(scope)).to_list()
     by_customer: Dict[str, Dict[str, Any]] = {}
     for c in customers:
         by_customer[str(c.id)] = {
@@ -191,22 +321,27 @@ async def customer_payments(scope: Dict[str, Any]) -> Dict[str, Any]:
             "payment_count": 0,
             "last_payment": None,
         }
-    for p in payments:
-        row = by_customer.get(p.customer_id)
+
+    for r in pay_rows:
+        cid = r["_id"]
+        row = by_customer.get(cid)
         if row is None:
             row = by_customer.setdefault(
-                p.customer_id,
-                {"customer_id": p.customer_id, "customer_name": p.customer_name,
-                 "phone": None, "total_paid": 0, "pending": 0, "payment_count": 0, "last_payment": None},
+                cid,
+                {
+                    "customer_id": cid,
+                    "customer_name": r.get("customer_name"),
+                    "phone": None,
+                    "total_paid": 0,
+                    "pending": 0,
+                    "payment_count": 0,
+                    "last_payment": None,
+                },
             )
-        row["payment_count"] += 1
-        if p.status == PaymentStatus.PENDING:
-            row["pending"] += p.amount
-        else:
-            row["total_paid"] += p.amount
-        pdate = p.date.isoformat() if p.date else None
-        if pdate and (row["last_payment"] is None or pdate > row["last_payment"]):
-            row["last_payment"] = pdate
+        row["total_paid"] = r["total_paid"]
+        row["pending"] = r["pending"]
+        row["payment_count"] = r["payment_count"]
+        row["last_payment"] = _iso_date(r.get("last_payment"))
 
     rows = sorted(by_customer.values(), key=lambda r: r["pending"], reverse=True)
     return {
@@ -222,10 +357,12 @@ async def daily_summary(scope: Dict[str, Any], on: Optional[dt.date] = None) -> 
     day_start = dt.datetime.combine(day, dt.time.min)
     day_end = dt.datetime.combine(day, dt.time.max)
 
-    employees = await Employee.find(_merge(scope)).to_list()
-    status_counts: Dict[str, int] = defaultdict(int)
-    for e in employees:
-        status_counts[str(e.status)] += 1
+    # Staff counts per status, server-side.
+    status_rows = await Employee.aggregate(
+        [{"$match": _merge(scope)}, {"$group": {"_id": "$status", "count": {"$sum": 1}}}]
+    ).to_list()
+    status_counts: Dict[str, int] = {r["_id"]: r["count"] for r in status_rows if r.get("_id")}
+    total_staff = sum(status_counts.values())
 
     active_customers = await Customer.find(_merge(scope, {"is_active": True})).count()
 
@@ -243,7 +380,7 @@ async def daily_summary(scope: Dict[str, Any], on: Optional[dt.date] = None) -> 
     available = status_counts.get(str(EmployeeStatus.AVAILABLE), 0)
     return {
         "date": day.isoformat(),
-        "total_staff": len(employees),
+        "total_staff": total_staff,
         "available_staff": available,
         "assigned_staff": status_counts.get(str(EmployeeStatus.ASSIGNED), 0),
         "on_leave_staff": status_counts.get(str(EmployeeStatus.ON_LEAVE), 0),
@@ -251,7 +388,7 @@ async def daily_summary(scope: Dict[str, Any], on: Optional[dt.date] = None) -> 
         "active_customers": active_customers,
         "todays_shifts": todays_shifts,
         "vacancies": available,
-        "status_breakdown": dict(status_counts),
+        "status_breakdown": status_counts,
     }
 
 
@@ -282,16 +419,36 @@ async def duty_report(
     if status and status.lower() != "all":
         query_filter["status"] = status.lower()
 
+    # The detail rows must be returned, so this result set is loaded; it is
+    # bounded by the period/filter above. Reference data (customers, employees,
+    # locations) is fetched only for the ids actually present — not whole
+    # collections — via ``$in`` lookups.
     assignments = await Assignment.find(query_filter).sort("-start_date", "-created_at").to_list()
 
-    customers = await Customer.find(_merge(scope)).to_list()
-    cust_map = {str(c.id): c for c in customers}
+    cust_ids = {a.customer_id for a in assignments if a.customer_id}
+    emp_ids = {a.employee_id for a in assignments if a.employee_id}
+    loc_ids = {a.location_id for a in assignments if a.location_id}
 
-    employees = await Employee.find(_merge(scope)).to_list()
-    emp_map = {str(e.id): e for e in employees}
+    cust_docs = (
+        await Customer.find({"_id": {"$in": _object_ids(cust_ids)}}).to_list()
+        if cust_ids
+        else []
+    )
+    cust_map = {str(c.id): c for c in cust_docs}
 
-    locations = await Location.find({"is_active": True}).to_list()
-    loc_map = {str(l.id): l.name for l in locations}
+    emp_docs = (
+        await Employee.find({"_id": {"$in": _object_ids(emp_ids)}}).to_list()
+        if emp_ids
+        else []
+    )
+    emp_map = {str(e.id): e for e in emp_docs}
+
+    loc_docs = (
+        await Location.find({"_id": {"$in": _object_ids(loc_ids)}}).to_list()
+        if loc_ids
+        else []
+    )
+    loc_map = {str(l.id): l.name for l in loc_docs}
 
     total_billed = 0
     total_staff_payout = 0
