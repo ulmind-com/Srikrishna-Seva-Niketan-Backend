@@ -74,6 +74,7 @@ class Booking(TimestampedDocument):
     source: Optional[str] = None
     customer_id: Optional[str] = None
     location_id: Optional[str] = None
+    staff_acceptance_status: Optional[str] = None
 
     class Settings:
         name = "bookings"

@@ -68,12 +68,14 @@ from app.core.security import (
 )
 from app.dependencies.staff_auth import STAFF_SCOPE, get_current_staff
 from app.models.assignment import Assignment
+from app.models.booking import Booking
 from app.models.customer import Customer
 from app.models.email_otp import EmailOtp
 from app.models.employee import Employee
 from app.models.enums import (
     AcceptanceStatus,
     AssignmentStatus,
+    BookingStatus,
     EmployeeStatus,
     NotificationType,
     PaymentMode,
@@ -805,6 +807,26 @@ async def _customer_phone(a: Assignment) -> Optional[str]:
         return None
 
 
+async def _sync_booking_staff_status(
+    customer_id: Optional[str],
+    staff_acceptance: str,
+    booking_status: Optional[BookingStatus] = None,
+) -> None:
+    """Keep any linked booking status in sync when staff acts on an assignment."""
+    if not customer_id:
+        return
+    try:
+        booking = await Booking.find_one({"customer_id": customer_id})
+        if booking:
+            booking.staff_acceptance_status = staff_acceptance
+            if booking_status:
+                booking.status = booking_status
+            booking.touch()
+            await booking.save()
+    except Exception as exc:
+        logger.warning("Could not sync booking staff status: %s", exc)
+
+
 @router.post("/me/assignments/{assignment_id}/accept", summary="Accept a duty")
 async def accept_assignment(
     assignment_id: str,
@@ -817,6 +839,8 @@ async def accept_assignment(
     a.decline_reason = None
     a.touch()
     await a.save()
+
+    asyncio.create_task(_sync_booking_staff_status(a.customer_id, "accepted"))
 
     # Background task so client response is instant (<20ms)
     asyncio.create_task(
@@ -853,6 +877,8 @@ async def decline_assignment(
         await staff.save()
     reason = f" Reason: {payload.reason}." if payload.reason else ""
 
+    asyncio.create_task(_sync_booking_staff_status(a.customer_id, "declined"))
+
     # Background task so client response is instant
     asyncio.create_task(
         notification_service.create(
@@ -871,6 +897,62 @@ async def decline_assignment(
 class CompleteDutyPayload(BaseModel):
     cash_collected: Optional[bool] = False
     notes: Optional[str] = None
+
+
+@router.post(
+    "/me/assignments/{assignment_id}/collect-payment",
+    summary="Record in-hand cash payment collected by staff for postpaid duty",
+)
+async def collect_assignment_payment(
+    assignment_id: str,
+    staff: Employee = Depends(get_current_staff),
+) -> dict:
+    """Record that the nurse has received cash from the customer. Automatically adds to revenue reports."""
+    a = await _own_assignment(assignment_id, staff)
+    now = dt.datetime.now(dt.timezone.utc)
+    a.payment_status = PaymentStatus.PAID
+    a.payment_received_at = now
+    a.payment_received_by = f"Staff: {staff.name} (In-hand Cash)"
+    a.touch()
+    await a.save()
+
+    # Record in Payments table so it automatically reflects in Reports
+    if a.customer_rate and a.customer_rate > 0:
+        try:
+            from app.models.finance import Payment
+
+            pay = Payment(
+                customer_id=a.customer_id,
+                customer_name=a.customer_name,
+                assignment_id=str(a.id),
+                location_id=a.location_id,
+                amount=int(a.customer_rate),
+                mode=PaymentMode.CASH,
+                status=PaymentStatus.PAID,
+                date=now.date(),
+                note=f"Cash collected in-hand by staff member {staff.name}.",
+            )
+            await pay.insert()
+        except Exception as e:
+            logger.warning("Payment record creation failed: %s", e)
+
+    from app.services.dashboard_service import invalidate_dashboard_cache
+    invalidate_dashboard_cache()
+
+    asyncio.create_task(
+        notification_service.create(
+            title="Cash Collected by Staff",
+            message=f"{staff.name} collected ₹{a.customer_rate or 0} cash from {a.customer_name}.",
+            type=NotificationType.ASSIGNMENT,
+            link="/payments",
+            reference_id=str(a.id),
+        )
+    )
+
+    return success_response(
+        data=await _staff_item(a, await _customer_phone(a)),
+        message="Payment recorded successfully",
+    )
 
 
 @router.post(
@@ -912,8 +994,7 @@ async def complete_assignment(
                 )
                 await pay.insert()
             except Exception as e:
-                import logging
-                logging.getLogger("app").exception("Payment insert error: %s", e)
+                logger.warning("Payment insert error: %s", e)
 
     a.touch()
     staff.status = EmployeeStatus.AVAILABLE
@@ -921,6 +1002,7 @@ async def complete_assignment(
 
     # Persist assignment and staff availability concurrently (<50ms)
     await asyncio.gather(a.save(), staff.save())
+    asyncio.create_task(_sync_booking_staff_status(a.customer_id, "accepted", BookingStatus.COMPLETED))
 
     from app.dependencies.staff_auth import invalidate_staff_cache
     from app.services.dashboard_service import invalidate_dashboard_cache
@@ -962,9 +1044,19 @@ async def assignment_route(
     a = await _own_assignment(assignment_id, staff)
     dest_lat, dest_lng = a.dest_lat, a.dest_lng
     if dest_lat is None or dest_lng is None:
+        if a.customer_id:
+            cust = await Customer.get(a.customer_id)
+            if cust and cust.lat is not None and cust.lng is not None:
+                dest_lat, dest_lng = cust.lat, cust.lng
+    if dest_lat is None or dest_lng is None:
         coords = await geo_service.geocode(a.address or "")
         if coords is not None:
             dest_lat, dest_lng = coords
+    if (dest_lat is None or dest_lng is None) and a.location_id:
+        loc = await Location.get(a.location_id)
+        if loc and loc.lat is not None and loc.lng is not None:
+            dest_lat, dest_lng = loc.lat, loc.lng
+
     route = None
     if dest_lat is not None and dest_lng is not None:
         route = await geo_service.directions(
@@ -980,6 +1072,7 @@ async def assignment_route(
             "dest_lat": dest_lat,
             "dest_lng": dest_lng,
             "preference": preference,
+            "steps": route.get("steps") if route else None,
         }
     )
 

@@ -175,6 +175,7 @@ class BookingService:
         booking = await self.get_or_404(booking_id, actor)
         booking.assigned_staff_id = staff_id
         booking.assigned_staff_name = staff_name
+        booking.staff_acceptance_status = "pending"
         booking.status = BookingStatus.ASSIGNED
         booking.touch()
         await booking.save()

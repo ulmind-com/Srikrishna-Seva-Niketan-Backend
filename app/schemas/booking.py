@@ -66,6 +66,7 @@ class BookingUpdate(BaseModel):
     status: Optional[BookingStatus] = None
     assigned_staff_id: Optional[str] = None
     assigned_staff_name: Optional[str] = None
+    staff_acceptance_status: Optional[str] = None
 
 
 class BookingStatusUpdate(BaseModel):
@@ -116,3 +117,4 @@ class BookingResponse(IdTimestampSchema):
     source: Optional[str] = None
     customer_id: Optional[str] = None
     location_id: Optional[str] = None
+    staff_acceptance_status: Optional[str] = None
