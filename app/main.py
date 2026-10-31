@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+import datetime as dt
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from slowapi.middleware import SlowAPIMiddleware
 
 from app import __version__
@@ -110,27 +112,111 @@ def create_app() -> FastAPI:
             message="Srikrishna Seva Niketan API is running",
         )
 
-    @app.get("/health", tags=["Health"], summary="Health check")
-    async def health() -> dict:
-        return success_response(
-            data={
-                "status": "ok",
+    _HEALTH_HEADERS = {
+        "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+        "Pragma": "no-cache",
+        "Expires": "0",
+    }
+
+    async def _handle_health() -> JSONResponse:
+        """Readiness probe checking database connectivity with bounded timeout (<=2.5s). Always returns 200."""
+        db_ok = False
+        try:
+            db_ok = bool(await asyncio.wait_for(ping(), timeout=2.5))
+        except Exception:
+            db_ok = False
+
+        status_str = "ok" if db_ok else "degraded"
+        db_str = "connected" if db_ok else "disconnected"
+
+        return JSONResponse(
+            status_code=200,
+            content={
+                "status": status_str,
+                "database": db_str,
                 "version": __version__,
+                "timestamp": dt.datetime.now(dt.timezone.utc).isoformat(),
+                "success": True,
+                "message": "Service healthy" if db_ok else "Service degraded: database disconnected",
+                "data": {
+                    "status": status_str,
+                    "database": db_str,
+                    "version": __version__,
+                },
+                "errors": None,
             },
-            message="Health check",
+            headers=_HEALTH_HEADERS,
         )
 
-    @app.get("/health/db", tags=["Health"], summary="Database health check")
-    async def health_db() -> dict:
-        db_ok = await ping()
-        return success_response(
-            data={
-                "status": "ok" if db_ok else "degraded",
-                "database": "connected" if db_ok else "disconnected",
-                "version": __version__,
+    async def _handle_ping() -> JSONResponse:
+        """Ultra-lightweight liveness probe (instant ~1ms, no DB access). Always returns 200."""
+        return JSONResponse(
+            status_code=200,
+            content={
+                "ping": "pong",
+                "status": "ok",
+                "timestamp": dt.datetime.now(dt.timezone.utc).isoformat(),
+                "success": True,
+                "message": "pong",
+                "data": {
+                    "ping": "pong",
+                    "status": "ok",
+                },
+                "errors": None,
             },
-            message="Database health check",
+            headers=_HEALTH_HEADERS,
         )
+
+    # 1. /health: Readiness probe checking database connectivity (strict <=2.5s timeout, always 200)
+    @app.api_route(
+        "/health",
+        methods=["GET", "HEAD"],
+        tags=["Health"],
+        summary="Readiness probe with bounded database check",
+    )
+    @app.api_route(
+        f"{settings.API_V1_PREFIX}/health",
+        methods=["GET", "HEAD"],
+        tags=["Health"],
+        summary="Readiness probe (API v1 alias)",
+    )
+    @limiter.exempt
+    async def health() -> JSONResponse:
+        return await _handle_health()
+
+    # 2. /ping: Ultra-lightweight liveness probe (instant ~1-2ms, no DB check, always 200)
+    @app.api_route(
+        "/ping",
+        methods=["GET", "HEAD"],
+        tags=["Health"],
+        summary="Ultra-lightweight liveness probe",
+    )
+    @app.api_route(
+        f"{settings.API_V1_PREFIX}/ping",
+        methods=["GET", "HEAD"],
+        tags=["Health"],
+        summary="Ultra-lightweight liveness probe (API v1 alias)",
+    )
+    @limiter.exempt
+    async def ping_endpoint() -> JSONResponse:
+        return await _handle_ping()
+
+    # Legacy /health/db compatibility (always 200, no-cache headers)
+    @app.api_route(
+        "/health/db",
+        methods=["GET", "HEAD"],
+        tags=["Health"],
+        summary="Database health check",
+    )
+    @app.api_route(
+        f"{settings.API_V1_PREFIX}/health/db",
+        methods=["GET", "HEAD"],
+        tags=["Health"],
+        summary="Database health check (API v1 alias)",
+    )
+    @limiter.exempt
+    async def health_db() -> JSONResponse:
+        return await _handle_health()
 
     return app
 
