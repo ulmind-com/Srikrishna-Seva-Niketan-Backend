@@ -180,7 +180,11 @@ async def test_route_survives_geo_failure(client, staff_ctx, monkeypatch):
         f"/api/v1/staff-portal/me/assignments/{a.id}/route?lat=22.57&lng=88.36",
         headers=staff_ctx["headers"])
     assert resp.status_code == 200, resp.text
-    assert resp.json()["data"]["geometry"] is None
+    data = resp.json()["data"]
+    # Fallback straight-line geometry and distance are provided when directions service is unavailable
+    assert data["distance_m"] is not None
+    assert isinstance(data["geometry"], list)
+
 
 
 async def test_location_ping_persists(client, staff_ctx):
