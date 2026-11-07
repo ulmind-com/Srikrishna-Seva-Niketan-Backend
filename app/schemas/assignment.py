@@ -46,6 +46,38 @@ def _parse_flexible_date(v):
     return v
 
 
+def _fmt_time(hhmm: Optional[str]) -> Optional[str]:
+    """'18:00' -> '6:00 PM'. Returns None on empty/bad input."""
+    if not hhmm:
+        return None
+    try:
+        h, m = hhmm.split(":")
+        h_i, m_i = int(h), int(m)
+    except (ValueError, AttributeError):
+        return hhmm
+    suffix = "AM" if h_i < 12 else "PM"
+    h12 = h_i % 12 or 12
+    return f"{h12}:{m_i:02d} {suffix}"
+
+
+_SHIFT_LABEL = {
+    "day": "Day",
+    "night": "Night",
+    "full_24h": "24 Hours",
+    "custom": "Custom",
+}
+
+
+def _format_shift(shift, start_time: Optional[str], end_time: Optional[str]) -> str:
+    """Readable shift: a time window for custom shifts, else the shift label."""
+    s = str(getattr(shift, "value", shift))
+    if s == "custom" and (start_time or end_time):
+        a = _fmt_time(start_time) or "?"
+        b = _fmt_time(end_time) or "?"
+        return f"{a} - {b}"
+    return _SHIFT_LABEL.get(s, s)
+
+
 class AssignmentCreate(BaseModel):
     customer_id: str
     employee_id: str
@@ -53,6 +85,9 @@ class AssignmentCreate(BaseModel):
     place_name: Optional[str] = Field(None, max_length=200)
     address: Optional[str] = Field(None, max_length=500)
     shift: ShiftType = ShiftType.FULL_24H
+    # Custom shift window, "HH:MM" 24-hour (used when shift == custom).
+    start_time: Optional[str] = Field(None, max_length=5)
+    end_time: Optional[str] = Field(None, max_length=5)
     start_date: dt.date
     end_date: Optional[dt.date] = None
     # Convenience input: how many days the engagement runs for. When given
@@ -61,6 +96,9 @@ class AssignmentCreate(BaseModel):
     status: AssignmentStatus = AssignmentStatus.SCHEDULED
     payment_type: Optional[PaymentType] = PaymentType.PREPAID
     payment_status: Optional[PaymentStatus] = PaymentStatus.PENDING
+    # Per-day rates (preferred). Stored totals are derived = daily × total_days.
+    customer_daily_rate: Optional[int] = Field(None, ge=0)
+    employee_daily_rate: Optional[int] = Field(None, ge=0)
     customer_rate: Optional[int] = Field(None, ge=0)
     employee_payout: Optional[int] = Field(None, ge=0)
     other_expense: Optional[int] = Field(None, ge=0)
@@ -76,6 +114,8 @@ class AssignmentCreate(BaseModel):
 
     @field_validator(
         "duration_days",
+        "customer_daily_rate",
+        "employee_daily_rate",
         "customer_rate",
         "employee_payout",
         "other_expense",
@@ -84,6 +124,8 @@ class AssignmentCreate(BaseModel):
         "place_name",
         "address",
         "notes",
+        "start_time",
+        "end_time",
         mode="before",
     )
     @classmethod
@@ -99,6 +141,8 @@ class AssignmentUpdate(BaseModel):
     place_name: Optional[str] = Field(None, max_length=200)
     address: Optional[str] = Field(None, max_length=500)
     shift: Optional[ShiftType] = None
+    start_time: Optional[str] = Field(None, max_length=5)
+    end_time: Optional[str] = Field(None, max_length=5)
     start_date: Optional[dt.date] = None
     end_date: Optional[dt.date] = None
     duration_days: Optional[int] = Field(None, ge=1, le=3650)
@@ -108,6 +152,8 @@ class AssignmentUpdate(BaseModel):
     payment_received_at: Optional[dt.datetime] = None
     payment_received_by: Optional[str] = None
     work_completed_at: Optional[dt.datetime] = None
+    customer_daily_rate: Optional[int] = Field(None, ge=0)
+    employee_daily_rate: Optional[int] = Field(None, ge=0)
     customer_rate: Optional[int] = Field(None, ge=0)
     employee_payout: Optional[int] = Field(None, ge=0)
     other_expense: Optional[int] = Field(None, ge=0)
@@ -122,6 +168,8 @@ class AssignmentUpdate(BaseModel):
 
     @field_validator(
         "duration_days",
+        "customer_daily_rate",
+        "employee_daily_rate",
         "customer_rate",
         "employee_payout",
         "other_expense",
@@ -130,6 +178,8 @@ class AssignmentUpdate(BaseModel):
         "place_name",
         "address",
         "notes",
+        "start_time",
+        "end_time",
         mode="before",
     )
     @classmethod
@@ -149,6 +199,8 @@ class AssignmentResponse(IdTimestampSchema):
     place_name: Optional[str] = None
     address: Optional[str] = None
     shift: ShiftType
+    start_time: Optional[str] = None
+    end_time: Optional[str] = None
     start_date: dt.date
     end_date: Optional[dt.date] = None
     status: AssignmentStatus
@@ -163,11 +215,19 @@ class AssignmentResponse(IdTimestampSchema):
     decline_reason: Optional[str] = None
     dest_lat: Optional[float] = None
     dest_lng: Optional[float] = None
+    customer_daily_rate: Optional[int] = None
+    employee_daily_rate: Optional[int] = None
     customer_rate: Optional[int] = None
     employee_payout: Optional[int] = None
     other_expense: Optional[int] = None
     bill_no: Optional[int] = None
     notes: Optional[str] = None
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def shift_label(self) -> str:
+        """Readable shift, e.g. '6:00 AM - 6:00 PM' for custom windows."""
+        return _format_shift(self.shift, self.start_time, self.end_time)
 
     # ---- Derived progress (so the admin sees how much of the engagement is
     # done and how many days are still left, without computing it client-side).
@@ -224,6 +284,8 @@ class StaffAssignmentResponse(IdTimestampSchema):
     place_name: Optional[str] = None
     address: Optional[str] = None
     shift: ShiftType
+    start_time: Optional[str] = None
+    end_time: Optional[str] = None
     start_date: dt.date
     end_date: Optional[dt.date] = None
     acceptance_status: AcceptanceStatus
@@ -234,6 +296,11 @@ class StaffAssignmentResponse(IdTimestampSchema):
     work_completed_at: Optional[dt.datetime] = None
     dest_lat: Optional[float] = None
     dest_lng: Optional[float] = None
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def shift_label(self) -> str:
+        return _format_shift(self.shift, self.start_time, self.end_time)
 
     @computed_field  # type: ignore[prop-decorator]
     @property

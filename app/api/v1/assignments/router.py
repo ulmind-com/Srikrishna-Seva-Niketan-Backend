@@ -81,6 +81,33 @@ def _apply_duration(data: dict, start: Optional[dt.date]) -> dict:
     return data
 
 
+def _derive_amounts(
+    data: dict,
+    start: Optional[dt.date],
+    end: Optional[dt.date],
+    existing_cdr: Optional[int] = None,
+    existing_edr: Optional[int] = None,
+) -> dict:
+    """Set stored totals from the per-day rates: total = daily_rate × total_days.
+
+    Only runs when the engagement has a concrete end_date (a closed span). An
+    explicit ``customer_rate`` / ``employee_payout`` in the payload always wins.
+    Open-ended engagements keep null totals and are billed per calendar month.
+    """
+    if not (start and end):
+        return data
+    total_days = (end - start).days + 1
+    if total_days <= 0:
+        return data
+    cdr = data.get("customer_daily_rate", existing_cdr)
+    edr = data.get("employee_daily_rate", existing_edr)
+    if cdr is not None and "customer_rate" not in data:
+        data["customer_rate"] = cdr * total_days
+    if edr is not None and "employee_payout" not in data:
+        data["employee_payout"] = edr * total_days
+    return data
+
+
 @router.get("", summary="List assignments")
 async def list_assignments(
     params: PaginationParams = Depends(pagination_params),
@@ -304,9 +331,11 @@ async def create_assignment(
     data["location_id"] = branch_id
     data["customer_name"] = customer.name
     data["employee_name"] = employee.name
-    # Default rates from the linked records when not explicitly provided.
-    data.setdefault("customer_rate", customer.billing_rate)
-    data.setdefault("employee_payout", employee.daily_rate)
+    # Default the per-day rates from the linked records, then derive the stored
+    # totals (customer_rate / employee_payout) as daily_rate × total_days.
+    data.setdefault("customer_daily_rate", customer.billing_rate)
+    data.setdefault("employee_daily_rate", employee.daily_rate)
+    _derive_amounts(data, data.get("start_date"), data.get("end_date"))
 
     # Snapshot the destination point so routing stays stable:
     # 1. Explicit admin pin on the assignment takes first priority
@@ -379,6 +408,14 @@ async def update_assignment(
     ensure_can_access(actor, existing.location_id)
     data = payload.model_dump(exclude_unset=True)
     data = _apply_duration(data, data.get("start_date") or existing.start_date)
+    # Recompute stored totals when the dates or per-day rates change.
+    _derive_amounts(
+        data,
+        data.get("start_date") or existing.start_date,
+        data.get("end_date") if "end_date" in data else existing.end_date,
+        existing.customer_daily_rate,
+        existing.employee_daily_rate,
+    )
     # Re-geocode if the posting address changed and no explicit pin was given
     if "address" in data and "dest_lat" not in data and data["address"] != existing.address:
         coords = await geo_service.geocode(data["address"] or "")

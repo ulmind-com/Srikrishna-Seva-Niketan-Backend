@@ -38,6 +38,11 @@ class Assignment(TimestampedDocument):
     address: Optional[str] = None
 
     shift: ShiftType = ShiftType.FULL_24H
+    # Custom shift window as "HH:MM" (24-hour). Used when shift == CUSTOM, e.g.
+    # start_time "06:00", end_time "18:00"; an overnight window (end <= start,
+    # e.g. 20:00 -> 06:00) is read as finishing the next day.
+    start_time: Optional[str] = None
+    end_time: Optional[str] = None
     start_date: dt.date
     end_date: Optional[dt.date] = None
 
@@ -54,6 +59,11 @@ class Assignment(TimestampedDocument):
     # record is edited later.
     dest_lat: Optional[float] = None
     dest_lng: Optional[float] = None
+
+    # Per-day rates — the admin enters these; the stored totals below are
+    # derived as daily_rate × total_days so all existing reports keep working.
+    customer_daily_rate: Optional[int] = None  # charged to the customer per day
+    employee_daily_rate: Optional[int] = None  # paid to the staff member per day
 
     customer_rate: Optional[int] = None  # contract value — revenue for this engagement
     employee_payout: Optional[int] = None  # paid to the staff member — an expense

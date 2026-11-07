@@ -15,6 +15,7 @@ from app.models.customer import Customer
 from app.models.employee import Employee
 from app.models.equipment import Equipment, EquipmentCategory, EquipmentRental
 from app.models.faq import FAQ
+from app.models.billing import MonthlyBill
 from app.models.finance import Expense, Payment
 from app.models.elder_care import ElderCareRequest
 from app.models.email_otp import EmailOtp
@@ -70,6 +71,7 @@ ALL_DOCUMENT_MODELS = [
     AttendanceRecord,
     Expense,
     Payment,
+    MonthlyBill,
     EmailOtp,
 ]
 
@@ -110,6 +112,7 @@ __all__ = [
     "Customer",
     "Assignment",
     "AttendanceRecord",
+    "MonthlyBill",
     "Expense",
     "Payment",
 ]

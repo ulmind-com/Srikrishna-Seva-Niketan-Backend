@@ -5,6 +5,7 @@ from fastapi import APIRouter
 from app.api.v1.assignments.router import router as assignments_router
 from app.api.v1.auth.router import router as auth_router
 from app.api.v1.blogs.router import router as blogs_router
+from app.api.v1.billing.router import router as billing_router
 from app.api.v1.bookings.router import router as bookings_router
 from app.api.v1.careers.router import router as careers_router
 from app.api.v1.contact.router import router as contact_router
@@ -57,6 +58,7 @@ api_router.include_router(locations_router)
 api_router.include_router(employees_router)
 api_router.include_router(customers_router)
 api_router.include_router(assignments_router)
+api_router.include_router(billing_router)
 api_router.include_router(expenses_router)
 api_router.include_router(payments_router)
 api_router.include_router(payroll_router)
