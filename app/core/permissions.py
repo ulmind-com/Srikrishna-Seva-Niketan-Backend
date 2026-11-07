@@ -45,6 +45,7 @@ RESOURCES = [
     "assignments",
     "expenses",
     "payments",
+    "payroll",
     "reports",
 ]
 
@@ -115,7 +116,7 @@ DEFAULT_ROLES: Dict[str, dict] = {
         ),
         "permissions": [
             _perm(r, a)
-            for r in ("employees", "customers", "assignments", "expenses", "payments")
+            for r in ("employees", "customers", "assignments", "expenses", "payments", "payroll")
             for a in (VIEW, CREATE, UPDATE)
         ]
         + [

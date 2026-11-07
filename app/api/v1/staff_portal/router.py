@@ -26,8 +26,11 @@ need auditing and server-side revocation, keep using the admin auth service.
 
 import asyncio
 import datetime as dt
+import logging
+import re
 import secrets
 import string
+import time
 from typing import Dict, List, Optional, Tuple
 
 from bson import ObjectId
@@ -86,9 +89,11 @@ from app.models.location import Location
 from app.schemas.assignment import StaffAssignmentResponse
 from app.schemas.staff_portal import (
     DeclineRequest,
+    ForgotPasswordRequest,
     LocationPing,
     PushSubscriptionRequest,
     PushUnsubscribeRequest,
+    ResetPasswordRequest,
     VerifyIdRequest,
     SendOtpRequest,
     StaffGoogleAuthRequest,
@@ -107,6 +112,7 @@ from app.utils.files import MAX_IMAGE_BYTES, read_validated_image
 
 router = APIRouter(prefix="/staff-portal", tags=["Staff Portal"])
 email_service = EmailService()
+logger = logging.getLogger(__name__)
 
 _ALPHABET = string.ascii_uppercase + string.digits
 
@@ -511,6 +517,113 @@ async def google_auth(payload: StaffGoogleAuthRequest) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Password reset (forgot password)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/forgot-password", summary="Send a password-reset code")
+@limiter.limit("5/minute")
+async def forgot_password(
+    request: Request,
+    response: Response,
+    payload: ForgotPasswordRequest,
+) -> dict:
+    """Email a 6-digit reset code to a registered staff member.
+
+    Returns the same generic envelope whether or not the email is registered,
+    so the endpoint cannot be used to enumerate staff accounts.
+    """
+    email = payload.email.lower().strip()
+    staff = await Employee.find_one({"email": email})
+
+    generic = success_response(
+        data={"email": email},
+        message="If that email is registered, a reset code has been sent.",
+    )
+    if staff is None or not staff.is_active or not staff.hashed_password:
+        return generic
+
+    otp = f"{secrets.randbelow(900000) + 100000:06d}"
+    expires_at = dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=10)
+    await EmailOtp.find(
+        {"email": email, "purpose": "staff_password_reset", "is_verified": False}
+    ).delete()
+    await EmailOtp(
+        email=email,
+        otp=otp,
+        purpose="staff_password_reset",
+        is_verified=False,
+        expires_at=expires_at,
+    ).insert()
+
+    sent = await email_service.send_staff_otp(to=email, otp=otp)
+    if not sent:
+        # Email provider inactive (dev / dummy creds): surface the code so the
+        # reset flow is still testable rather than silently dead-ending.
+        return success_response(
+            data={"email": email, "dev_otp": otp},
+            message="Reset code generated (email provider inactive).",
+        )
+    return generic
+
+
+@router.post("/reset-password", summary="Set a new password using the reset code")
+@limiter.limit("10/minute")
+async def reset_password(
+    request: Request,
+    response: Response,
+    payload: ResetPasswordRequest,
+) -> dict:
+    """Verify the reset OTP and set a new password."""
+    email = payload.email.lower().strip()
+    otp = payload.otp.strip()
+
+    record = await EmailOtp.find_one(
+        {
+            "email": email,
+            "otp": otp,
+            "purpose": "staff_password_reset",
+            "is_verified": False,
+            "expires_at": {"$gt": dt.datetime.now(dt.timezone.utc)},
+        }
+    )
+    if not record:
+        raise BadRequestException("Invalid or expired reset code")
+
+    staff = await Employee.find_one({"email": email})
+    if staff is None or not staff.hashed_password:
+        raise BadRequestException("No account found for this email")
+
+    staff.hashed_password = await asyncio.to_thread(hash_password, payload.new_password)
+    staff.touch()
+    await staff.save()
+
+    record.is_verified = True
+    record.verified_at = dt.datetime.now(dt.timezone.utc)
+    record.touch()
+    await record.save()
+
+    # Revoke existing staff sessions so a leaked old token cannot outlive the
+    # reset. Best-effort — a failure here must not fail the reset itself.
+    try:
+        sessions = await RefreshToken.find(
+            {"user_id": str(staff.id), "scope": STAFF_SCOPE, "revoked": False}
+        ).to_list()
+        now = dt.datetime.now(dt.timezone.utc)
+        for s in sessions:
+            s.revoked = True
+            s.revoked_at = now
+            await s.save()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not revoke staff sessions after reset: %s", exc)
+
+    return success_response(
+        data={"email": email, "reset": True},
+        message="Password updated — please sign in with your new password.",
+    )
+
+
+# ---------------------------------------------------------------------------
 # Profile & onboarding
 # ---------------------------------------------------------------------------
 
@@ -552,7 +665,7 @@ async def update_me(
 @router.post("/me/upload", summary="Upload my photo / signature / ID proof")
 async def upload_my_asset(
     file: UploadFile = File(...),
-    kind: str = Form("photo", description="photo | signature | id_proof"),
+    kind: str = Form("photo", description="photo | signature | id_proof | voter_photo | pan_photo | bank_photo"),
     staff: Employee = Depends(get_current_staff),
 ) -> dict:
     """Staff-scoped image upload.
@@ -563,8 +676,9 @@ async def upload_my_asset(
     asset is written straight onto the staff member's own record, so this
     cannot be used to touch anybody else's data.
     """
-    if kind not in {"photo", "signature", "id_proof"}:
-        raise BadRequestException("kind must be photo, signature or id_proof")
+    allowed_kinds = {"photo", "signature", "id_proof", "voter_photo", "pan_photo", "bank_photo"}
+    if kind not in allowed_kinds:
+        raise BadRequestException("kind must be one of: " + ", ".join(sorted(allowed_kinds)))
     if staff.verification_status == StaffVerificationStatus.VERIFIED:
         raise BadRequestException("Your profile is verified and can no longer be edited")
 

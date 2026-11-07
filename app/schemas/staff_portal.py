@@ -64,6 +64,22 @@ class StaffLoginRequest(BaseModel):
     password: str = Field(..., min_length=1)
 
 
+class ForgotPasswordRequest(BaseModel):
+    """Request a password-reset code for an existing staff account."""
+
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    """Set a new password using the emailed 6-digit reset code."""
+
+    email: EmailStr
+    otp: str = Field(..., min_length=4, max_length=8)
+    new_password: str = Field(..., min_length=8, max_length=128)
+
+    _check_password = field_validator("new_password")(_validate_password)
+
+
 class StaffGoogleAuthRequest(BaseModel):
     """Sign in with a Google ID token (wired once a Client ID is configured)."""
 
@@ -97,6 +113,14 @@ class StaffOnboardingRequest(BaseModel):
     id_proof: Optional[ImageAsset] = None
     id_proof_type: Optional[str] = Field(None, max_length=40)
     id_proof_number: Optional[str] = Field(None, max_length=40)
+    # ---- Additional KYC documents (number + photo for each) ----
+    voter_number: Optional[str] = Field(None, max_length=40)
+    voter_photo: Optional[ImageAsset] = None
+    pan_number: Optional[str] = Field(None, max_length=20)
+    pan_photo: Optional[ImageAsset] = None
+    bank_account_number: Optional[str] = Field(None, max_length=40)
+    bank_ifsc: Optional[str] = Field(None, max_length=20)
+    bank_photo: Optional[ImageAsset] = None
     document_verification: Optional[dict] = None
 
 
@@ -139,6 +163,13 @@ class StaffProfileResponse(IdTimestampSchema):
     id_proof: Optional[ImageAsset] = None
     id_proof_type: Optional[str] = None
     id_proof_number: Optional[str] = None
+    voter_number: Optional[str] = None
+    voter_photo: Optional[ImageAsset] = None
+    pan_number: Optional[str] = None
+    pan_photo: Optional[ImageAsset] = None
+    bank_account_number: Optional[str] = None
+    bank_ifsc: Optional[str] = None
+    bank_photo: Optional[ImageAsset] = None
     location_id: str
     status: EmployeeStatus
     verification_status: StaffVerificationStatus

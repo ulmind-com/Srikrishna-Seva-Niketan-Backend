@@ -49,6 +49,15 @@ class Employee(TimestampedDocument):
     id_proof_type: Optional[str] = None  # Aadhaar / Voter / PAN ...
     id_proof_number: Optional[str] = None
 
+    # ---- Additional KYC documents (number + photo for each) ----
+    voter_number: Optional[str] = None
+    voter_photo: Optional[ImageAsset] = None
+    pan_number: Optional[str] = None
+    pan_photo: Optional[ImageAsset] = None
+    bank_account_number: Optional[str] = None
+    bank_ifsc: Optional[str] = None
+    bank_photo: Optional[ImageAsset] = None
+
     # Multi-location scoping.
     location_id: Indexed(str)  # type: ignore[valid-type]
 

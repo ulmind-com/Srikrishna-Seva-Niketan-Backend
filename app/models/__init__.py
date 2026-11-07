@@ -6,6 +6,7 @@ every collection with Beanie in a single place.
 
 from app.models.activity_log import ActivityLog
 from app.models.assignment import Assignment
+from app.models.attendance import AttendanceRecord
 from app.models.blog import Blog, BlogCategory
 from app.models.booking import Booking, Patient
 from app.models.career import CareerJob, JobApplication, JobCategory
@@ -66,6 +67,7 @@ ALL_DOCUMENT_MODELS = [
     Employee,
     Customer,
     Assignment,
+    AttendanceRecord,
     Expense,
     Payment,
     EmailOtp,
@@ -107,6 +109,7 @@ __all__ = [
     "Employee",
     "Customer",
     "Assignment",
+    "AttendanceRecord",
     "Expense",
     "Payment",
 ]

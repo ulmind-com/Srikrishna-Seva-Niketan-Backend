@@ -141,6 +141,20 @@ class ShiftType(StrEnum):
     CUSTOM = "custom"
 
 
+class AttendanceStatus(StrEnum):
+    """What a staff member did on one calendar day — the payroll source of truth.
+
+    Only ``PRESENT`` (full pay) and ``HALF_DAY`` (half pay) are payable; a staff
+    member on ``LEAVE`` or on a scheduled ``OFF`` day earns nothing for that day,
+    so those dates surface on the payslip as unpaid off-days.
+    """
+
+    PRESENT = "present"
+    HALF_DAY = "half_day"
+    LEAVE = "leave"
+    OFF = "off"
+
+
 class AssignmentPlace(StrEnum):
     """Where the staff member is posted for an engagement."""
 
