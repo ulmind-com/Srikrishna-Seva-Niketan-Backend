@@ -402,6 +402,46 @@ async def update_assignment(
     return item_response(AssignmentResponse, doc, "Assignment updated")
 
 
+# First digital bill number. Kept well clear of the low numbers on the paper
+# bill pad so the two series never collide.
+_BILL_NO_BASE = 1000
+
+
+async def _next_bill_no() -> int:
+    """Atomically allocate the next sequential customer-bill number."""
+    from pymongo import ReturnDocument
+
+    from app.database.connection import get_database
+
+    db = get_database()
+    res = await db["counters"].find_one_and_update(
+        {"_id": "assignment_bill_no"},
+        {"$inc": {"seq": 1}},
+        upsert=True,
+        return_document=ReturnDocument.AFTER,
+    )
+    return _BILL_NO_BASE + int(res["seq"])
+
+
+@router.post("/{assignment_id}/issue-bill", summary="Allocate this engagement's bill number")
+async def issue_bill(
+    assignment_id: str,
+    actor: ActorContext = Depends(require_permission("assignments", "view")),
+) -> dict:
+    """Return the engagement's customer-bill number, allocating one on first use.
+
+    Idempotent: once a bill number is assigned it is reused, so re-opening or
+    re-printing the bill always shows the same number.
+    """
+    doc = await _assignments.get_or_404(assignment_id)
+    ensure_can_access(actor, doc.location_id)
+    if doc.bill_no is None:
+        doc.bill_no = await _next_bill_no()
+        doc.touch()
+        await doc.save()
+    return success_response(data={"bill_no": doc.bill_no})
+
+
 @router.delete("/{assignment_id}", summary="Delete assignment")
 async def delete_assignment(
     assignment_id: str,

@@ -166,6 +166,7 @@ class AssignmentResponse(IdTimestampSchema):
     customer_rate: Optional[int] = None
     employee_payout: Optional[int] = None
     other_expense: Optional[int] = None
+    bill_no: Optional[int] = None
     notes: Optional[str] = None
 
     # ---- Derived progress (so the admin sees how much of the engagement is

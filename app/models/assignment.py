@@ -59,6 +59,10 @@ class Assignment(TimestampedDocument):
     employee_payout: Optional[int] = None  # paid to the staff member — an expense
     other_expense: Optional[int] = None  # misc cost for this engagement (travel, kit…)
 
+    # Sequential customer-bill number, allocated the first time a bill is
+    # generated for this engagement and kept thereafter so the bill is stable.
+    bill_no: Optional[int] = None
+
     payment_type: PaymentType = PaymentType.PREPAID
     payment_status: PaymentStatus = PaymentStatus.PENDING
     payment_received_at: Optional[dt.datetime] = None
