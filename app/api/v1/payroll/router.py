@@ -152,6 +152,15 @@ async def day_roster(
     """Who was present / on leave / off on a single day, with branch totals."""
     day = date or dt.date.today()
 
+    # Auto-fill present rows from the day's duties so the roster reflects them.
+    if actor.is_scoped:
+        mat_locs = actor.location_ids
+    elif location_id is not None and actor.can_access_location(location_id):
+        mat_locs = [location_id]
+    else:
+        mat_locs = None
+    await payroll_service.materialize_from_assignments(day, day, mat_locs)
+
     filters: dict = actor.scope_filter()
     filters["date"] = day
     if location_id is not None and actor.can_access_location(location_id):
@@ -338,6 +347,10 @@ async def get_payslip(
         raise BadRequestException("Employee not found")
     ensure_can_access(actor, employee.location_id)
     first, last, days = _month_bounds(month)
+    # Auto-fill present days from this staff member's duties before reading.
+    await payroll_service.materialize_from_assignments(
+        first, last, [employee.location_id] if employee.location_id else None
+    )
     data = await payroll_service.build_payslip(employee, first, last, days)
     return success_response(data=data)
 
@@ -355,5 +368,7 @@ async def get_payroll_run(
         location_ids = [location_id]
     else:
         location_ids = None
+    # Auto-fill present days from duties across the run's scope before reading.
+    await payroll_service.materialize_from_assignments(first, last, location_ids)
     data = await payroll_service.payroll_run(first, last, days, location_ids)
     return success_response(data=data)

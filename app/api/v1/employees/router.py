@@ -172,6 +172,8 @@ async def verify_employee(
     doc.verified_at = dt.datetime.now(dt.timezone.utc)
     doc.verified_by = actor.user_id
     doc.rejection_reason = None
+    # A verified staff member is active (shows up in attendance / rosters).
+    doc.is_active = True
     doc.touch()
     await doc.save()
 

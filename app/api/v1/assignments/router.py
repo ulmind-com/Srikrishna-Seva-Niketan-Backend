@@ -451,6 +451,8 @@ async def update_assignment(
             employee_id=doc.employee_id,
             reference_id=str(doc.id),
         )
+    from app.services.dashboard_service import invalidate_dashboard_cache
+    invalidate_dashboard_cache()
     return item_response(AssignmentResponse, doc, "Assignment updated")
 
 
@@ -502,4 +504,6 @@ async def delete_assignment(
     existing = await _assignments.get_or_404(assignment_id)
     ensure_can_access(actor, existing.location_id)
     await _assignments.delete(assignment_id, actor)
+    from app.services.dashboard_service import invalidate_dashboard_cache
+    invalidate_dashboard_cache()
     return success_response(message="Assignment deleted")

@@ -197,6 +197,35 @@ class DashboardService:
         total_expense = assignment_cost + (exp_agg[0]["total"] if exp_agg else 0)
         profit = total_revenue - total_expense
 
+        # Today's duties — date-aware on-duty count + shift breakdown.
+        today = dt.date.today()
+        today_dt = dt.datetime.combine(today, dt.time.min)
+        todays_duties = await Assignment.find(
+            {
+                **scope,
+                "status": {"$in": ["scheduled", "active"]},
+                "start_date": {"$lte": today_dt},
+                "$or": [{"end_date": None}, {"end_date": {"$gte": today_dt}}],
+            }
+        ).to_list()
+        by_shift: Dict[str, int] = {}
+        for a in todays_duties:
+            by_shift[a.shift.value] = by_shift.get(a.shift.value, 0) + 1
+
+        # This month's payout — auto-filled from duties, then summed from attendance.
+        from app.services import payroll_service as _pay
+
+        pay_first, pay_last, pay_days = _pay.parse_month(None)
+        pay_locs = location_ids if is_scoped else None
+        try:
+            await _pay.materialize_from_assignments(pay_first, pay_last, pay_locs)
+            pay_run = await _pay.payroll_run(pay_first, pay_last, pay_days, pay_locs)
+            month_payout = pay_run["totals"]["total_gross_pay"]
+            payout_month = pay_run["period"]["month"]
+        except Exception:
+            month_payout = 0
+            payout_month = f"{today.year:04d}-{today.month:02d}"
+
         # Map branch summaries in O(1) from aggregation dictionaries
         branches_summary: List[Dict[str, Any]] = []
         if not is_scoped and all_locs:
@@ -236,6 +265,14 @@ class DashboardService:
             },
             "assignments": {
                 "active": active_assignments,
+            },
+            "today": {
+                "on_duty": len(todays_duties),
+                "by_shift": by_shift,
+            },
+            "payroll": {
+                "month": payout_month,
+                "total_payout": month_payout,
             },
             "customers": {
                 "active": active_customers,

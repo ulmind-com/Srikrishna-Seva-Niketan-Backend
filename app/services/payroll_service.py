@@ -13,12 +13,110 @@ import calendar
 import datetime as dt
 from typing import Dict, List, Optional, Sequence, Tuple
 
+from app.models.assignment import Assignment
 from app.models.attendance import AttendanceRecord
 from app.models.employee import Employee
-from app.models.enums import AttendanceStatus
+from app.models.enums import AssignmentStatus, AttendanceStatus
 
 _PAYABLE = (AttendanceStatus.PRESENT, AttendanceStatus.HALF_DAY)
 _OFF = (AttendanceStatus.LEAVE, AttendanceStatus.OFF)
+_OCCUPYING = (AssignmentStatus.SCHEDULED, AssignmentStatus.ACTIVE)
+
+
+async def materialize_from_assignments(
+    first: dt.date, last: dt.date, location_ids: Optional[List[str]] = None
+) -> int:
+    """Create PRESENT attendance rows for assignment-active days that have none.
+
+    "Auto Present": every day a staff member is engaged counts as present on the
+    payslip without the admin marking it. Idempotent and override-safe:
+    - a day the admin hand-marked (any status, no assignment_id) is left alone,
+    - an assignment's day that already has its row is skipped,
+    - two assignments on one day create two rows (two shifts pay twice),
+    - days after today are never marked (pay only for worked days).
+    Rows are inserted directly (no audit) since they are system-generated.
+    """
+    today = dt.date.today()
+    cap = min(last, today)
+    if cap < first:
+        return 0
+
+    first_dt = dt.datetime.combine(first, dt.time.min)
+    cap_dt = dt.datetime.combine(cap, dt.time.min)
+
+    a_filter: dict = {
+        "status": {"$in": [s.value for s in _OCCUPYING]},
+        "start_date": {"$lte": cap_dt},
+        "$or": [{"end_date": None}, {"end_date": {"$gte": first_dt}}],
+    }
+    if location_ids is not None:
+        a_filter["location_id"] = {"$in": location_ids}
+    assignments = await Assignment.find(a_filter).to_list()
+    if not assignments:
+        return 0
+
+    emp_ids = {a.employee_id for a in assignments}
+    employees = {
+        str(e.id): e for e in await Employee.find({"_id": {"$in": _oids(emp_ids)}}).to_list()
+    }
+
+    existing = await _fetch_records(first, cap)
+    handmarked: set = set()  # (employee_id, date) owned by the admin
+    synced: set = set()      # (employee_id, date, assignment_id) already present
+    for r in existing:
+        if r.assignment_id:
+            synced.add((r.employee_id, r.date, r.assignment_id))
+        else:
+            handmarked.add((r.employee_id, r.date))
+
+    new_rows: List[AttendanceRecord] = []
+    for a in assignments:
+        emp = employees.get(a.employee_id)
+        if emp is None:
+            continue
+        rate = a.employee_daily_rate if a.employee_daily_rate is not None else emp.daily_rate
+        a_start = max(a.start_date, first)
+        a_end = min(a.end_date or cap, cap)
+        day = a_start
+        while day <= a_end:
+            key_day = (a.employee_id, day)
+            key_syn = (a.employee_id, day, str(a.id))
+            if key_day not in handmarked and key_syn not in synced:
+                new_rows.append(
+                    AttendanceRecord(
+                        employee_id=a.employee_id,
+                        employee_name=a.employee_name,
+                        location_id=a.location_id,
+                        date=day,
+                        status=AttendanceStatus.PRESENT,
+                        shift=a.shift,
+                        start_time=a.start_time,
+                        end_time=a.end_time,
+                        shift_windows=a.shift_windows,
+                        assignment_id=str(a.id),
+                        customer_name=a.customer_name,
+                        pay_rate=rate,
+                    )
+                )
+                synced.add(key_syn)
+            day += dt.timedelta(days=1)
+
+    if new_rows:
+        await AttendanceRecord.insert_many(new_rows)
+    return len(new_rows)
+
+
+def _oids(ids):
+    from bson import ObjectId
+    from bson.errors import InvalidId
+
+    out = []
+    for i in ids:
+        try:
+            out.append(ObjectId(i))
+        except (InvalidId, TypeError):
+            pass
+    return out
 
 
 def parse_month(month: Optional[str]) -> Tuple[dt.date, dt.date, int]:
