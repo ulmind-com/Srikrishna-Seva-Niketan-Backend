@@ -12,12 +12,13 @@ day is marked, so a later rate change never silently rewrites past pay.
 from __future__ import annotations
 
 import datetime as dt
-from typing import Optional
+from typing import List, Optional
 
 import pymongo
 from beanie import Indexed
 from pydantic import Field
 
+from app.models.assignment import ShiftWindow
 from app.models.base import TimestampedDocument
 from app.models.enums import AttendanceStatus, ShiftType
 
@@ -40,6 +41,7 @@ class AttendanceRecord(TimestampedDocument):
     # payslip / attendance report can show the exact hours worked.
     start_time: Optional[str] = None
     end_time: Optional[str] = None
+    shift_windows: Optional[List[ShiftWindow]] = None
 
     # Optional link back to the customer engagement this day was served under,
     # so the payslip can show "where" the staff member worked. Populated when a

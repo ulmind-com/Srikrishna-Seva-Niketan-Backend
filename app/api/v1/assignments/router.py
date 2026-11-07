@@ -81,6 +81,18 @@ def _apply_duration(data: dict, start: Optional[dt.date]) -> dict:
     return data
 
 
+def _sync_shift_times(data: dict) -> dict:
+    """Mirror the first custom shift window into start_time/end_time (compat)."""
+    windows = data.get("shift_windows")
+    if windows:
+        first = windows[0]
+        start = first.get("start") if isinstance(first, dict) else getattr(first, "start", None)
+        end = first.get("end") if isinstance(first, dict) else getattr(first, "end", None)
+        data["start_time"] = start
+        data["end_time"] = end
+    return data
+
+
 def _derive_amounts(
     data: dict,
     start: Optional[dt.date],
@@ -328,6 +340,7 @@ async def create_assignment(
 
     data = payload.model_dump(exclude_unset=True)
     data = _apply_duration(data, payload.start_date)
+    data = _sync_shift_times(data)
     data["location_id"] = branch_id
     data["customer_name"] = customer.name
     data["employee_name"] = employee.name
@@ -408,6 +421,8 @@ async def update_assignment(
     ensure_can_access(actor, existing.location_id)
     data = payload.model_dump(exclude_unset=True)
     data = _apply_duration(data, data.get("start_date") or existing.start_date)
+    if "shift_windows" in data:
+        data = _sync_shift_times(data)
     # Recompute stored totals when the dates or per-day rates change.
     _derive_amounts(
         data,

@@ -3,13 +3,20 @@
 from __future__ import annotations
 
 import datetime as dt
-from typing import Optional
+from typing import List, Optional
 
 import pymongo
 from beanie import Indexed
-from pydantic import Field
+from pydantic import BaseModel, Field
 
 from app.models.base import TimestampedDocument
+
+
+class ShiftWindow(BaseModel):
+    """One worked time window, "HH:MM" 24-hour (overnight allowed)."""
+
+    start: Optional[str] = None
+    end: Optional[str] = None
 from app.models.enums import (
     AcceptanceStatus,
     AssignmentPlace,
@@ -40,9 +47,12 @@ class Assignment(TimestampedDocument):
     shift: ShiftType = ShiftType.FULL_24H
     # Custom shift window as "HH:MM" (24-hour). Used when shift == CUSTOM, e.g.
     # start_time "06:00", end_time "18:00"; an overnight window (end <= start,
-    # e.g. 20:00 -> 06:00) is read as finishing the next day.
+    # e.g. 20:00 -> 06:00) is read as finishing the next day. These mirror the
+    # first entry of ``shift_windows`` for backward compatibility.
     start_time: Optional[str] = None
     end_time: Optional[str] = None
+    # One custom shift can span several windows (e.g. 6 AM-2 PM and 6 PM-10 PM).
+    shift_windows: Optional[List[ShiftWindow]] = None
     start_date: dt.date
     end_date: Optional[dt.date] = None
 

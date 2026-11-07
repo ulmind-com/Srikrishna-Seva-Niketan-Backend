@@ -59,6 +59,7 @@ async def _upsert_day(
     assignment_id: Optional[str],
     start_time: Optional[str] = None,
     end_time: Optional[str] = None,
+    shift_windows=None,
     actor: ActorContext,
 ) -> AttendanceRecord:
     """Create the day's record, or update the matching one.
@@ -81,6 +82,7 @@ async def _upsert_day(
         "shift": shift,
         "start_time": start_time,
         "end_time": end_time,
+        "shift_windows": shift_windows,
         "pay_rate": rate,
         "customer_name": customer_name,
         "note": note,
@@ -286,6 +288,7 @@ async def sync_from_assignments(
             assignment_id=str(a.id),
             start_time=a.start_time,
             end_time=a.end_time,
+            shift_windows=[w.model_dump() for w in a.shift_windows] if a.shift_windows else None,
             actor=actor,
         )
         created += 1

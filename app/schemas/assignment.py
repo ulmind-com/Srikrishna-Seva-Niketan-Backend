@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import datetime as dt
-from typing import Optional
+from typing import List, Optional
 
 from pydantic import BaseModel, Field, computed_field, field_validator
 
+from app.models.assignment import ShiftWindow
 from app.models.enums import (
     AcceptanceStatus,
     AssignmentPlace,
@@ -68,13 +69,20 @@ _SHIFT_LABEL = {
 }
 
 
-def _format_shift(shift, start_time: Optional[str], end_time: Optional[str]) -> str:
-    """Readable shift: a time window for custom shifts, else the shift label."""
+def _format_shift(shift, start_time: Optional[str], end_time: Optional[str], windows=None) -> str:
+    """Readable shift: the time window(s) for custom shifts, else the label."""
     s = str(getattr(shift, "value", shift))
-    if s == "custom" and (start_time or end_time):
-        a = _fmt_time(start_time) or "?"
-        b = _fmt_time(end_time) or "?"
-        return f"{a} - {b}"
+    if s == "custom":
+        parts = []
+        for w in windows or []:
+            start = getattr(w, "start", None) if not isinstance(w, dict) else w.get("start")
+            end = getattr(w, "end", None) if not isinstance(w, dict) else w.get("end")
+            if start or end:
+                parts.append(f"{_fmt_time(start) or '?'} - {_fmt_time(end) or '?'}")
+        if not parts and (start_time or end_time):
+            parts.append(f"{_fmt_time(start_time) or '?'} - {_fmt_time(end_time) or '?'}")
+        if parts:
+            return ", ".join(parts)
     return _SHIFT_LABEL.get(s, s)
 
 
@@ -88,6 +96,7 @@ class AssignmentCreate(BaseModel):
     # Custom shift window, "HH:MM" 24-hour (used when shift == custom).
     start_time: Optional[str] = Field(None, max_length=5)
     end_time: Optional[str] = Field(None, max_length=5)
+    shift_windows: Optional[List[ShiftWindow]] = None
     start_date: dt.date
     end_date: Optional[dt.date] = None
     # Convenience input: how many days the engagement runs for. When given
@@ -143,6 +152,7 @@ class AssignmentUpdate(BaseModel):
     shift: Optional[ShiftType] = None
     start_time: Optional[str] = Field(None, max_length=5)
     end_time: Optional[str] = Field(None, max_length=5)
+    shift_windows: Optional[List[ShiftWindow]] = None
     start_date: Optional[dt.date] = None
     end_date: Optional[dt.date] = None
     duration_days: Optional[int] = Field(None, ge=1, le=3650)
@@ -201,6 +211,7 @@ class AssignmentResponse(IdTimestampSchema):
     shift: ShiftType
     start_time: Optional[str] = None
     end_time: Optional[str] = None
+    shift_windows: Optional[List[ShiftWindow]] = None
     start_date: dt.date
     end_date: Optional[dt.date] = None
     status: AssignmentStatus
@@ -226,8 +237,8 @@ class AssignmentResponse(IdTimestampSchema):
     @computed_field  # type: ignore[prop-decorator]
     @property
     def shift_label(self) -> str:
-        """Readable shift, e.g. '6:00 AM - 6:00 PM' for custom windows."""
-        return _format_shift(self.shift, self.start_time, self.end_time)
+        """Readable shift, e.g. '6:00 AM - 2:00 PM, 6:00 PM - 10:00 PM'."""
+        return _format_shift(self.shift, self.start_time, self.end_time, self.shift_windows)
 
     # ---- Derived progress (so the admin sees how much of the engagement is
     # done and how many days are still left, without computing it client-side).
@@ -286,6 +297,7 @@ class StaffAssignmentResponse(IdTimestampSchema):
     shift: ShiftType
     start_time: Optional[str] = None
     end_time: Optional[str] = None
+    shift_windows: Optional[List[ShiftWindow]] = None
     start_date: dt.date
     end_date: Optional[dt.date] = None
     acceptance_status: AcceptanceStatus
@@ -300,7 +312,7 @@ class StaffAssignmentResponse(IdTimestampSchema):
     @computed_field  # type: ignore[prop-decorator]
     @property
     def shift_label(self) -> str:
-        return _format_shift(self.shift, self.start_time, self.end_time)
+        return _format_shift(self.shift, self.start_time, self.end_time, self.shift_windows)
 
     @computed_field  # type: ignore[prop-decorator]
     @property

@@ -155,6 +155,9 @@ async def build_payslip(
                     "shift": rec.shift.value,
                     "start_time": rec.start_time,
                     "end_time": rec.end_time,
+                    "shift_windows": (
+                        [w.model_dump() for w in rec.shift_windows] if rec.shift_windows else None
+                    ),
                     "customer_name": rec.customer_name,
                     "pay_rate": rate,
                     "amount": _day_amount(rec.status, rate),

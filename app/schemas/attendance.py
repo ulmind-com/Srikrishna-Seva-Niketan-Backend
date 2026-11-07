@@ -7,6 +7,7 @@ from typing import List, Optional
 
 from pydantic import BaseModel, Field, computed_field, field_validator
 
+from app.models.assignment import ShiftWindow
 from app.models.enums import AttendanceStatus, ShiftType
 from app.schemas.common import IdTimestampSchema
 
@@ -56,6 +57,7 @@ class AttendanceCreate(BaseModel):
     shift: ShiftType = ShiftType.FULL_24H
     start_time: Optional[str] = Field(None, max_length=5)
     end_time: Optional[str] = Field(None, max_length=5)
+    shift_windows: Optional[List[ShiftWindow]] = None
     assignment_id: Optional[str] = None
     customer_name: Optional[str] = Field(None, max_length=200)
     pay_rate: Optional[int] = Field(None, ge=0)
@@ -120,6 +122,7 @@ class AttendanceResponse(IdTimestampSchema):
     shift: ShiftType
     start_time: Optional[str] = None
     end_time: Optional[str] = None
+    shift_windows: Optional[List[ShiftWindow]] = None
     assignment_id: Optional[str] = None
     customer_name: Optional[str] = None
     pay_rate: Optional[int] = None
