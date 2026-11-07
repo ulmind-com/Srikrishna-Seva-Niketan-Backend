@@ -54,6 +54,8 @@ class AttendanceCreate(BaseModel):
     date: dt.date
     status: AttendanceStatus = AttendanceStatus.PRESENT
     shift: ShiftType = ShiftType.FULL_24H
+    start_time: Optional[str] = Field(None, max_length=5)
+    end_time: Optional[str] = Field(None, max_length=5)
     assignment_id: Optional[str] = None
     customer_name: Optional[str] = Field(None, max_length=200)
     pay_rate: Optional[int] = Field(None, ge=0)
@@ -64,7 +66,7 @@ class AttendanceCreate(BaseModel):
     def _validate_date(cls, v):
         return _parse_flexible_date(v)
 
-    @field_validator("customer_name", "note", "assignment_id", "pay_rate", mode="before")
+    @field_validator("customer_name", "note", "assignment_id", "pay_rate", "start_time", "end_time", mode="before")
     @classmethod
     def _empty_to_none(cls, v):
         return None if v == "" else v
@@ -76,6 +78,8 @@ class AttendanceBulkItem(BaseModel):
     employee_id: str
     status: AttendanceStatus = AttendanceStatus.PRESENT
     shift: ShiftType = ShiftType.FULL_24H
+    start_time: Optional[str] = Field(None, max_length=5)
+    end_time: Optional[str] = Field(None, max_length=5)
     pay_rate: Optional[int] = Field(None, ge=0)
     note: Optional[str] = Field(None, max_length=1000)
 
@@ -95,11 +99,13 @@ class AttendanceBulkCreate(BaseModel):
 class AttendanceUpdate(BaseModel):
     status: Optional[AttendanceStatus] = None
     shift: Optional[ShiftType] = None
+    start_time: Optional[str] = Field(None, max_length=5)
+    end_time: Optional[str] = Field(None, max_length=5)
     customer_name: Optional[str] = Field(None, max_length=200)
     pay_rate: Optional[int] = Field(None, ge=0)
     note: Optional[str] = Field(None, max_length=1000)
 
-    @field_validator("customer_name", "note", "pay_rate", mode="before")
+    @field_validator("customer_name", "note", "pay_rate", "start_time", "end_time", mode="before")
     @classmethod
     def _empty_to_none(cls, v):
         return None if v == "" else v
@@ -112,6 +118,8 @@ class AttendanceResponse(IdTimestampSchema):
     date: dt.date
     status: AttendanceStatus
     shift: ShiftType
+    start_time: Optional[str] = None
+    end_time: Optional[str] = None
     assignment_id: Optional[str] = None
     customer_name: Optional[str] = None
     pay_rate: Optional[int] = None

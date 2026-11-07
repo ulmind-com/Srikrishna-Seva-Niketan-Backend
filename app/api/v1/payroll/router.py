@@ -57,16 +57,30 @@ async def _upsert_day(
     customer_name: Optional[str],
     note: Optional[str],
     assignment_id: Optional[str],
+    start_time: Optional[str] = None,
+    end_time: Optional[str] = None,
     actor: ActorContext,
 ) -> AttendanceRecord:
-    """Create the day's record, or update it if the day was already marked."""
+    """Create the day's record, or update the matching one.
+
+    A staff member may have several rows per day (one per shift / engagement),
+    so the row is keyed by (employee, date, assignment_id) for synced rows and
+    (employee, date, shift) for hand-marked rows — not just (employee, date).
+    """
     rate = pay_rate if pay_rate is not None else employee.daily_rate
-    existing = await AttendanceRecord.find_one(
-        {"employee_id": str(employee.id), "date": day}
-    )
+    shift_value = getattr(shift, "value", shift)
+    query: dict = {"employee_id": str(employee.id), "date": day}
+    if assignment_id:
+        query["assignment_id"] = assignment_id
+    else:
+        query["assignment_id"] = None
+        query["shift"] = shift_value
+    existing = await AttendanceRecord.find_one(query)
     data = {
         "status": status,
         "shift": shift,
+        "start_time": start_time,
+        "end_time": end_time,
         "pay_rate": rate,
         "customer_name": customer_name,
         "note": note,
@@ -157,6 +171,7 @@ async def day_roster(
                 "half_day": counts.get("half_day", 0),
                 "leave": counts.get("leave", 0),
                 "off": counts.get("off", 0),
+                "absent": counts.get("absent", 0),
             },
             "records": [
                 AttendanceResponse.model_validate(a).model_dump(mode="json")
@@ -184,6 +199,8 @@ async def mark_attendance(
         customer_name=payload.customer_name,
         note=payload.note,
         assignment_id=payload.assignment_id,
+        start_time=payload.start_time,
+        end_time=payload.end_time,
         actor=actor,
     )
     return item_response(AttendanceResponse, doc, "Attendance marked")
@@ -211,6 +228,8 @@ async def mark_attendance_bulk(
             customer_name=None,
             note=item.note,
             assignment_id=None,
+            start_time=item.start_time,
+            end_time=item.end_time,
             actor=actor,
         )
         saved += 1
@@ -243,8 +262,10 @@ async def sync_from_assignments(
     created = 0
     skipped = 0
     for a in running:
+        # Keyed per assignment, so a nurse with two duties that day (e.g. a day
+        # shift at one client and a night shift at another) gets two rows.
         existing = await AttendanceRecord.find_one(
-            {"employee_id": a.employee_id, "date": day}
+            {"employee_id": a.employee_id, "date": day, "assignment_id": str(a.id)}
         )
         if existing is not None:
             skipped += 1
@@ -258,10 +279,13 @@ async def sync_from_assignments(
             day,
             status=AttendanceStatus.PRESENT,
             shift=a.shift,
-            pay_rate=a.employee_payout or employee.daily_rate,
+            # Per-day staff rate — NOT the engagement total (employee_payout).
+            pay_rate=a.employee_daily_rate or employee.daily_rate,
             customer_name=a.customer_name,
             note=None,
             assignment_id=str(a.id),
+            start_time=a.start_time,
+            end_time=a.end_time,
             actor=actor,
         )
         created += 1

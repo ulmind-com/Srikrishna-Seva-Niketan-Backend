@@ -50,6 +50,13 @@ async def init_database() -> None:
     if _database is None:
         await connect_to_mongo()
     await init_beanie(database=_database, document_models=ALL_DOCUMENT_MODELS, skip_indexes=True)
+    # Drop the legacy one-row-per-day unique index: a staff member may now have
+    # more than one attendance row per day (multiple shifts). Harmless if absent.
+    try:
+        await _database["attendance"].drop_index("uniq_employee_day")
+        logger.info("Dropped legacy attendance index uniq_employee_day")
+    except Exception:
+        pass
     logger.info(
         "Beanie initialised (fast startup)", extra={"models": len(ALL_DOCUMENT_MODELS)}
     )

@@ -60,19 +60,30 @@ async def _fetch_records(
 
 
 def _summarize(records: Sequence[AttendanceRecord], fallback_rate: Optional[int]) -> dict:
-    """Aggregate a set of one employee's records into payslip totals."""
-    present = half = leave = off = 0
+    """Aggregate a set of one employee's records into payslip totals.
+
+    A staff member can have several rows on one date (multiple shifts), so pay
+    counts are per-row (two shifts pay twice) while ``worked_days`` counts the
+    distinct dates actually worked.
+    """
+    present = half = leave = off = absent = 0
     gross = 0
     by_shift: Dict[str, int] = {}
     off_dates: List[str] = []
+    absent_dates: List[str] = []
+    present_dates: set = set()
+    marked_dates: set = set()
 
-    for r in sorted(records, key=lambda x: x.date):
+    for r in sorted(records, key=lambda x: (x.date, x.shift.value)):
         rate = r.pay_rate if r.pay_rate is not None else fallback_rate
+        marked_dates.add(r.date)
         if r.status == AttendanceStatus.PRESENT:
             present += 1
+            present_dates.add(r.date)
             by_shift[r.shift.value] = by_shift.get(r.shift.value, 0) + 1
         elif r.status == AttendanceStatus.HALF_DAY:
             half += 1
+            present_dates.add(r.date)
             by_shift[r.shift.value] = by_shift.get(r.shift.value, 0) + 1
         elif r.status == AttendanceStatus.LEAVE:
             leave += 1
@@ -80,19 +91,28 @@ def _summarize(records: Sequence[AttendanceRecord], fallback_rate: Optional[int]
         elif r.status == AttendanceStatus.OFF:
             off += 1
             off_dates.append(r.date.isoformat())
+        elif r.status == AttendanceStatus.ABSENT:
+            absent += 1
+            absent_dates.append(r.date.isoformat())
         gross += _day_amount(r.status, rate)
 
     payable_days = present + half * 0.5
     return {
+        # Per-row counts (pay context — two shifts on a day count twice).
         "present_days": present,
         "half_days": half,
         "leave_days": leave,
         "off_days": off,
-        "marked_days": present + half + leave + off,
+        "absent_days": absent,
+        # Distinct dates actually worked (present or half).
+        "worked_days": len(present_dates),
+        # Distinct dates with any record.
+        "marked_days": len(marked_dates),
         "payable_days": payable_days,
         "gross_pay": gross,
         "by_shift": by_shift,
         "off_dates": off_dates,
+        "absent_dates": absent_dates,
     }
 
 
@@ -102,36 +122,44 @@ async def build_payslip(
     """One employee's full monthly payslip: day-by-day calendar plus totals."""
     emp_id = str(employee.id)
     records = await _fetch_records(first, last, {"employee_id": emp_id})
-    by_date = {r.date: r for r in records}
+    by_date: Dict[dt.date, List[AttendanceRecord]] = {}
+    for r in records:
+        by_date.setdefault(r.date, []).append(r)
     fallback_rate = employee.daily_rate
 
     daily: List[dict] = []
     for d in range(1, days + 1):
         day = dt.date(first.year, first.month, d)
-        rec = by_date.get(day)
-        if rec is None:
+        recs = by_date.get(day)
+        if not recs:
             daily.append(
                 {
                     "date": day.isoformat(),
                     "status": "unmarked",
                     "shift": None,
+                    "start_time": None,
+                    "end_time": None,
                     "customer_name": None,
                     "pay_rate": None,
                     "amount": 0,
                 }
             )
             continue
-        rate = rec.pay_rate if rec.pay_rate is not None else fallback_rate
-        daily.append(
-            {
-                "date": day.isoformat(),
-                "status": rec.status.value,
-                "shift": rec.shift.value,
-                "customer_name": rec.customer_name,
-                "pay_rate": rate,
-                "amount": _day_amount(rec.status, rate),
-            }
-        )
+        # One entry per shift worked that day (so two shifts show as two rows).
+        for rec in sorted(recs, key=lambda x: x.shift.value):
+            rate = rec.pay_rate if rec.pay_rate is not None else fallback_rate
+            daily.append(
+                {
+                    "date": day.isoformat(),
+                    "status": rec.status.value,
+                    "shift": rec.shift.value,
+                    "start_time": rec.start_time,
+                    "end_time": rec.end_time,
+                    "customer_name": rec.customer_name,
+                    "pay_rate": rate,
+                    "amount": _day_amount(rec.status, rate),
+                }
+            )
 
     summary = _summarize(records, fallback_rate)
     summary["unmarked_days"] = days - summary["marked_days"]
@@ -154,6 +182,7 @@ async def build_payslip(
         },
         "summary": summary,
         "off_dates": summary["off_dates"],
+        "absent_dates": summary["absent_dates"],
         "days": daily,
     }
 
@@ -201,6 +230,8 @@ async def payroll_run(
                 "half_days": summary["half_days"],
                 "leave_days": summary["leave_days"],
                 "off_days": summary["off_days"],
+                "absent_days": summary["absent_days"],
+                "worked_days": summary["worked_days"],
                 "payable_days": summary["payable_days"],
                 "gross_pay": summary["gross_pay"],
                 "by_shift": summary["by_shift"],

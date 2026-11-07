@@ -36,6 +36,10 @@ class AttendanceRecord(TimestampedDocument):
     status: AttendanceStatus = AttendanceStatus.PRESENT
     # Shift worked that day. Meaningful only when ``status`` is present/half.
     shift: ShiftType = ShiftType.FULL_24H
+    # Custom shift window ("HH:MM"), snapshotted from the assignment so the
+    # payslip / attendance report can show the exact hours worked.
+    start_time: Optional[str] = None
+    end_time: Optional[str] = None
 
     # Optional link back to the customer engagement this day was served under,
     # so the payslip can show "where" the staff member worked. Populated when a
@@ -56,11 +60,10 @@ class AttendanceRecord(TimestampedDocument):
             [("location_id", pymongo.ASCENDING)],
             [("date", pymongo.DESCENDING)],
             [("status", pymongo.ASCENDING)],
-            # One record per staff member per day — marking the same day again
-            # updates the existing row rather than creating a duplicate.
-            pymongo.IndexModel(
-                [("employee_id", pymongo.ASCENDING), ("date", pymongo.ASCENDING)],
-                name="uniq_employee_day",
-                unique=True,
-            ),
+            # A staff member can have more than one row per day (e.g. a day shift
+            # at one client and a night shift at another), so there is no unique
+            # (employee, date) constraint. De-duplication is handled in code by
+            # (employee, date, assignment_id) for synced rows and
+            # (employee, date, shift) for hand-marked ones.
+            [("employee_id", pymongo.ASCENDING), ("date", pymongo.ASCENDING)],
         ]

@@ -153,6 +153,7 @@ class AttendanceStatus(StrEnum):
     HALF_DAY = "half_day"
     LEAVE = "leave"
     OFF = "off"
+    ABSENT = "absent"
 
 
 class AssignmentPlace(StrEnum):
