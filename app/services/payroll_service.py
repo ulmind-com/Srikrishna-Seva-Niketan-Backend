@@ -157,12 +157,35 @@ async def _fetch_records(
     return await AttendanceRecord.find(query).to_list()
 
 
-def _summarize(records: Sequence[AttendanceRecord], fallback_rate: Optional[int]) -> dict:
-    """Aggregate a set of one employee's records into payslip totals.
+def _date_amount(rows: Sequence[AttendanceRecord], fallback_rate: Optional[int]) -> int:
+    """Pay for ONE calendar date — one day = one pay, regardless of shift count.
 
-    A staff member can have several rows on one date (multiple shifts), so pay
-    counts are per-row (two shifts pay twice) while ``worked_days`` counts the
-    distinct dates actually worked.
+    Two shifts on a day are two duties already priced in their assignments, so
+    the day is paid once (the highest shift rate), never multiplied by shifts.
+    """
+    present_rates = [
+        (r.pay_rate if r.pay_rate is not None else fallback_rate) or 0
+        for r in rows
+        if r.status == AttendanceStatus.PRESENT
+    ]
+    if present_rates:
+        return max(present_rates)
+    half_rates = [
+        (r.pay_rate if r.pay_rate is not None else fallback_rate) or 0
+        for r in rows
+        if r.status == AttendanceStatus.HALF_DAY
+    ]
+    if half_rates:
+        return round(max(half_rates) / 2)
+    return 0  # leave / off / absent earn nothing
+
+
+def _summarize(records: Sequence[AttendanceRecord], fallback_rate: Optional[int]) -> dict:
+    """Aggregate one employee's records into payslip totals.
+
+    Pay is **per calendar date** (one day = one pay), so a two-shift day is paid
+    once. ``present_days`` / ``by_shift`` still count shift rows (so the admin
+    can see two shifts ran), while pay and ``worked_days`` are date-based.
     """
     present = half = leave = off = absent = 0
     gross = 0
@@ -170,18 +193,20 @@ def _summarize(records: Sequence[AttendanceRecord], fallback_rate: Optional[int]
     off_dates: List[str] = []
     absent_dates: List[str] = []
     present_dates: set = set()
+    half_only_dates: set = set()
     marked_dates: set = set()
 
-    for r in sorted(records, key=lambda x: (x.date, x.shift.value)):
-        rate = r.pay_rate if r.pay_rate is not None else fallback_rate
+    by_date: Dict[dt.date, List[AttendanceRecord]] = {}
+    for r in records:
+        by_date.setdefault(r.date, []).append(r)
+
+    for r in records:
         marked_dates.add(r.date)
         if r.status == AttendanceStatus.PRESENT:
             present += 1
-            present_dates.add(r.date)
             by_shift[r.shift.value] = by_shift.get(r.shift.value, 0) + 1
         elif r.status == AttendanceStatus.HALF_DAY:
             half += 1
-            present_dates.add(r.date)
             by_shift[r.shift.value] = by_shift.get(r.shift.value, 0) + 1
         elif r.status == AttendanceStatus.LEAVE:
             leave += 1
@@ -192,9 +217,18 @@ def _summarize(records: Sequence[AttendanceRecord], fallback_rate: Optional[int]
         elif r.status == AttendanceStatus.ABSENT:
             absent += 1
             absent_dates.append(r.date.isoformat())
-        gross += _day_amount(r.status, rate)
 
-    payable_days = present + half * 0.5
+    # Pay once per date (highest shift rate), never per shift row.
+    for day, rows in by_date.items():
+        has_present = any(x.status == AttendanceStatus.PRESENT for x in rows)
+        has_half = any(x.status == AttendanceStatus.HALF_DAY for x in rows)
+        if has_present:
+            present_dates.add(day)
+        elif has_half:
+            half_only_dates.add(day)
+        gross += _date_amount(rows, fallback_rate)
+
+    payable_days = len(present_dates) + len(half_only_dates) * 0.5
     return {
         # Per-row counts (pay context — two shifts on a day count twice).
         "present_days": present,
@@ -243,9 +277,18 @@ async def build_payslip(
                 }
             )
             continue
-        # One entry per shift worked that day (so two shifts show as two rows).
+        # One entry per shift worked that day (so two shifts show as two rows),
+        # but the day is paid ONCE — the day's pay sits on the first paid shift,
+        # extra shifts show amount 0 (same duty, no double pay).
+        day_amount = _date_amount(recs, fallback_rate)
+        paid_emitted = False
         for rec in sorted(recs, key=lambda x: x.shift.value):
             rate = rec.pay_rate if rec.pay_rate is not None else fallback_rate
+            is_payable = rec.status in (AttendanceStatus.PRESENT, AttendanceStatus.HALF_DAY)
+            amount = 0
+            if is_payable and not paid_emitted:
+                amount = day_amount
+                paid_emitted = True
             daily.append(
                 {
                     "date": day.isoformat(),
@@ -258,7 +301,7 @@ async def build_payslip(
                     ),
                     "customer_name": rec.customer_name,
                     "pay_rate": rate,
-                    "amount": _day_amount(rec.status, rate),
+                    "amount": amount,
                 }
             )
 
