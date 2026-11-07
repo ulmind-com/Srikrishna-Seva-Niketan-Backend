@@ -26,6 +26,7 @@ from app.models.customer import Customer
 from app.models.employee import Employee
 from app.models.enums import AssignmentStatus, EmployeeStatus, PaymentStatus
 from app.models.finance import Expense, Payment
+from app.schemas.assignment import _format_shift
 
 
 def _date_bounds(
@@ -511,6 +512,8 @@ async def duty_report(
             "employee_name": a.employee_name,
             "employee_code": emp.code if emp else None,
             "shift": str(a.shift),
+            "shift_label": _format_shift(a.shift, a.start_time, a.end_time, a.shift_windows),
+            "shift_windows": [w.model_dump() for w in a.shift_windows] if a.shift_windows else None,
             "place_type": str(a.place_type),
             "place_name": a.place_name,
             "address": a.address or (cust.address if cust else None),
