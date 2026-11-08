@@ -275,7 +275,8 @@ async def sync_from_assignments(
     day_dt = dt.datetime.combine(day, dt.time.min)
 
     filters: dict = actor.scope_filter()
-    filters["status"] = {"$in": [s.value for s in _OCCUPYING]}
+    # Include completed duties too (a finished shift is still a worked day).
+    filters["status"] = {"$ne": AssignmentStatus.CANCELLED.value}
     filters["start_date"] = {"$lte": day_dt}
     filters["$or"] = [{"end_date": None}, {"end_date": {"$gte": day_dt}}]
     running = await Assignment.find(filters).to_list()

@@ -52,7 +52,9 @@ async def materialize_from_assignments(
     cap_dt = dt.datetime.combine(cap, dt.time.min)
 
     a_filter: dict = {
-        "status": {"$in": [s.value for s in _OCCUPYING]},
+        # A completed duty is still a day worked, so include everything except
+        # cancelled engagements (not only scheduled/active).
+        "status": {"$ne": AssignmentStatus.CANCELLED.value},
         "start_date": {"$lte": cap_dt},
         "$or": [{"end_date": None}, {"end_date": {"$gte": first_dt}}],
     }
