@@ -398,13 +398,21 @@ async def login(
 ) -> dict:
     """Authenticate a staff member with email OR mobile number + password."""
     import asyncio
+    import re
+
     ident = payload.identifier.strip()
-    # Look up by email, then by primary/alternate mobile number.
+    # Look up by email first.
     staff = await Employee.find_one({"email": ident.lower()})
-    if staff is None:
-        staff = await Employee.find_one({"phone": ident})
-    if staff is None:
-        staff = await Employee.find_one({"alt_phone": ident})
+    if staff is None and "@" not in ident:
+        # Mobile number: match tolerantly on the last 10 digits so stored
+        # formats (spaces, +91 prefix, etc.) still match what the staff types.
+        digits = re.sub(r"\D", "", ident)
+        if digits:
+            key = digits[-10:] if len(digits) >= 10 else digits
+            rgx = re.escape(key) + "$"
+            staff = await Employee.find_one(
+                {"$or": [{"phone": {"$regex": rgx}}, {"alt_phone": {"$regex": rgx}}]}
+            )
     # Same generic message whether the account is unknown or the password is
     # wrong, so the endpoint cannot be used to enumerate registered staff.
     if staff is None or not staff.hashed_password:
