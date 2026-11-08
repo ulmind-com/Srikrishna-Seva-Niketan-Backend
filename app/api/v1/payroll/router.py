@@ -150,7 +150,7 @@ async def day_roster(
     actor: ActorContext = Depends(require_permission("payroll", "view")),
 ) -> dict:
     """Who was present / on leave / off on a single day, with branch totals."""
-    day = date or dt.date.today()
+    day = date or payroll_service.today_ist()
 
     # Auto-fill present rows from the day's duties so the roster reflects them.
     if actor.is_scoped:
@@ -166,28 +166,38 @@ async def day_roster(
     if location_id is not None and actor.can_access_location(location_id):
         filters["location_id"] = location_id
 
-    items = await AttendanceRecord.find(filters).to_list()
+    # Read raw and validate each row on its own, so a single corrupt/legacy
+    # attendance document can never 500 the whole roster (it is skipped + logged).
+    raw_rows = await AttendanceRecord.get_motor_collection().find(filters).to_list(length=None)
+    items: list[AttendanceRecord] = []
+    for raw in raw_rows:
+        try:
+            items.append(AttendanceRecord.model_validate(raw))
+        except Exception as exc:
+            logger.warning("Skipping unparseable attendance row %s: %s", raw.get("_id"), exc)
     items.sort(key=lambda a: (a.employee_name or "").lower())
 
     counts: dict[str, int] = {s.value: 0 for s in AttendanceStatus}
+    records: list[dict] = []
     for a in items:
-        counts[a.status.value] = counts.get(a.status.value, 0) + 1
+        try:
+            records.append(AttendanceResponse.model_validate(a).model_dump(mode="json"))
+            counts[a.status.value] = counts.get(a.status.value, 0) + 1
+        except Exception as exc:
+            logger.warning("Skipping attendance row in roster serialize: %s", exc)
 
     return success_response(
         data={
             "date": day.isoformat(),
             "totals": {
-                "marked": len(items),
+                "marked": len(records),
                 "present": counts.get("present", 0),
                 "half_day": counts.get("half_day", 0),
                 "leave": counts.get("leave", 0),
                 "off": counts.get("off", 0),
                 "absent": counts.get("absent", 0),
             },
-            "records": [
-                AttendanceResponse.model_validate(a).model_dump(mode="json")
-                for a in items
-            ],
+            "records": records,
         }
     )
 
@@ -261,7 +271,7 @@ async def sync_from_assignments(
     date, a present record is created for the staff member with the engagement's
     shift and the customer's name — unless that day was already marked by hand.
     """
-    day = date or dt.date.today()
+    day = date or payroll_service.today_ist()
     day_dt = dt.datetime.combine(day, dt.time.min)
 
     filters: dict = actor.scope_filter()

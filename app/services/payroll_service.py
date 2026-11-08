@@ -12,6 +12,7 @@ from __future__ import annotations
 import calendar
 import datetime as dt
 from typing import Dict, List, Optional, Sequence, Tuple
+from zoneinfo import ZoneInfo
 
 from app.models.assignment import Assignment
 from app.models.attendance import AttendanceRecord
@@ -21,6 +22,12 @@ from app.models.enums import AssignmentStatus, AttendanceStatus
 _PAYABLE = (AttendanceStatus.PRESENT, AttendanceStatus.HALF_DAY)
 _OFF = (AttendanceStatus.LEAVE, AttendanceStatus.OFF)
 _OCCUPYING = (AssignmentStatus.SCHEDULED, AssignmentStatus.ACTIVE)
+_IST = ZoneInfo("Asia/Kolkata")
+
+
+def today_ist() -> dt.date:
+    """Today's date in Asia/Kolkata — the business calendar, not the UTC server."""
+    return dt.datetime.now(_IST).date()
 
 
 async def materialize_from_assignments(
@@ -36,7 +43,7 @@ async def materialize_from_assignments(
     - days after today are never marked (pay only for worked days).
     Rows are inserted directly (no audit) since they are system-generated.
     """
-    today = dt.date.today()
+    today = today_ist()
     cap = min(last, today)
     if cap < first:
         return 0
