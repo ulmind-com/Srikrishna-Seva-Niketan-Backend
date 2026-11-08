@@ -271,6 +271,10 @@ async def deployment_overview(
                         "code": e.code,
                         "category": e.category,
                         "phone": e.phone,
+                        "alt_phone": e.alt_phone,
+                        "address": e.address,
+                        "city": e.city,
+                        "pincode": e.pincode,
                         "photo": e.photo.model_dump(mode="json") if e.photo else None,
                     }
                     for e in sorted(free, key=lambda e: e.name.lower())
