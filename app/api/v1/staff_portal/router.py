@@ -732,15 +732,15 @@ async def submit_me(staff: Employee = Depends(get_current_staff)) -> dict:
     )
 
 
-@router.get("/me/payslip", summary="My monthly payslip & attendance")
-async def my_payslip(
+@router.get("/me/attendance", summary="My monthly attendance (no pay)")
+async def my_attendance(
     month: Optional[str] = Query(None, description="YYYY-MM; defaults to this month."),
     staff: Employee = Depends(get_current_staff),
 ) -> dict:
-    """The staff member's own payslip: days worked, leave/off, shifts, pay.
+    """The staff member's own attendance — days worked, leave/off, shifts.
 
-    Computed live from attendance (auto-filled from their duties), so the nurse
-    sees the same figures the payroll uses.
+    Computed live from attendance (auto-filled from their duties). Pay/salary
+    figures are STRIPPED: a nurse sees only their attendance, never money.
     """
     from app.services import payroll_service
 
@@ -749,6 +749,16 @@ async def my_payslip(
         first, last, [staff.location_id] if staff.location_id else None
     )
     data = await payroll_service.build_payslip(staff, first, last, days)
+
+    # Strip every money field — staff must not see pay.
+    emp = data.get("employee", {})
+    emp.pop("daily_rate", None)
+    summ = data.get("summary", {})
+    for k in ("gross_pay", "leave_deduction", "net_payable"):
+        summ.pop(k, None)
+    for d in data.get("days", []):
+        d.pop("amount", None)
+        d.pop("pay_rate", None)
     return success_response(data=data)
 
 
