@@ -732,6 +732,26 @@ async def submit_me(staff: Employee = Depends(get_current_staff)) -> dict:
     )
 
 
+@router.get("/me/payslip", summary="My monthly payslip & attendance")
+async def my_payslip(
+    month: Optional[str] = Query(None, description="YYYY-MM; defaults to this month."),
+    staff: Employee = Depends(get_current_staff),
+) -> dict:
+    """The staff member's own payslip: days worked, leave/off, shifts, pay.
+
+    Computed live from attendance (auto-filled from their duties), so the nurse
+    sees the same figures the payroll uses.
+    """
+    from app.services import payroll_service
+
+    first, last, days = payroll_service.parse_month(month)
+    await payroll_service.materialize_from_assignments(
+        first, last, [staff.location_id] if staff.location_id else None
+    )
+    data = await payroll_service.build_payslip(staff, first, last, days)
+    return success_response(data=data)
+
+
 # ---- Notifications (the staff member's own live feed) ----
 
 def _notif(n) -> dict:
