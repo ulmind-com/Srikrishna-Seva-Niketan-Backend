@@ -135,6 +135,7 @@ class CareType(StrEnum):
 class ShiftType(StrEnum):
     """Daily shift a staff member is assigned to a customer for."""
 
+    MORNING = "morning"
     DAY = "day"
     NIGHT = "night"
     FULL_24H = "full_24h"

@@ -196,6 +196,7 @@ def _summarize(records: Sequence[AttendanceRecord], fallback_rate: Optional[int]
     """
     present = half = leave = off = absent = 0
     gross = 0
+    leave_deduction = 0  # salary the staff would have earned on leave days
     by_shift: Dict[str, int] = {}
     off_dates: List[str] = []
     absent_dates: List[str] = []
@@ -217,6 +218,7 @@ def _summarize(records: Sequence[AttendanceRecord], fallback_rate: Optional[int]
             by_shift[r.shift.value] = by_shift.get(r.shift.value, 0) + 1
         elif r.status == AttendanceStatus.LEAVE:
             leave += 1
+            leave_deduction += (r.pay_rate if r.pay_rate is not None else fallback_rate) or 0
             off_dates.append(r.date.isoformat())
         elif r.status == AttendanceStatus.OFF:
             off += 1
@@ -249,6 +251,8 @@ def _summarize(records: Sequence[AttendanceRecord], fallback_rate: Optional[int]
         "marked_days": len(marked_dates),
         "payable_days": payable_days,
         "gross_pay": gross,
+        "leave_deduction": leave_deduction,
+        "net_payable": gross,
         "by_shift": by_shift,
         "off_dates": off_dates,
         "absent_dates": absent_dates,
@@ -385,6 +389,8 @@ async def payroll_run(
                 "worked_days": summary["worked_days"],
                 "payable_days": summary["payable_days"],
                 "gross_pay": summary["gross_pay"],
+                "leave_deduction": summary["leave_deduction"],
+                "net_payable": summary["net_payable"],
                 "by_shift": summary["by_shift"],
             }
         )

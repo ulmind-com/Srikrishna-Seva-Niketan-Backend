@@ -62,6 +62,7 @@ def _fmt_time(hhmm: Optional[str]) -> Optional[str]:
 
 
 _SHIFT_LABEL = {
+    "morning": "Morning",
     "day": "Day",
     "night": "Night",
     "full_24h": "24 Hours",
