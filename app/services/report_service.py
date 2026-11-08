@@ -91,26 +91,50 @@ async def profit_loss(
     assign_agg = await Assignment.aggregate(
         [
             {"$match": assign_match},
+            # Days billed per engagement — full span when closed, days elapsed so
+            # far when ongoing (so an open duty still contributes accrued value).
+            {
+                "$addFields": {
+                    "_eff_days": {
+                        "$cond": [
+                            {"$ifNull": ["$end_date", False]},
+                            {"$add": [{"$dateDiff": {"startDate": "$start_date", "endDate": "$end_date", "unit": "day"}}, 1]},
+                            {"$max": [1, {"$add": [{"$dateDiff": {"startDate": "$start_date", "endDate": "$$NOW", "unit": "day"}}, 1]}]},
+                        ]
+                    }
+                }
+            },
+            # Prefer the stored total; else derive from the per-day rate × days.
+            {
+                "$addFields": {
+                    "_eff_bill": {
+                        "$ifNull": ["$customer_rate", {"$multiply": [{"$ifNull": ["$customer_daily_rate", 0]}, "$_eff_days"]}]
+                    },
+                    "_eff_payout": {
+                        "$ifNull": ["$employee_payout", {"$multiply": [{"$ifNull": ["$employee_daily_rate", 0]}, "$_eff_days"]}]
+                    },
+                }
+            },
             {
                 "$facet": {
                     "totals": [
                         {
                             "$group": {
                                 "_id": None,
-                                "revenue": {"$sum": {"$ifNull": ["$customer_rate", 0]}},
-                                "staff_payout": {"$sum": {"$ifNull": ["$employee_payout", 0]}},
+                                "revenue": {"$sum": {"$ifNull": ["$_eff_bill", 0]}},
+                                "staff_payout": {"$sum": {"$ifNull": ["$_eff_payout", 0]}},
                                 "assignment_other": {"$sum": {"$ifNull": ["$other_expense", 0]}},
                                 "count": {"$sum": 1},
                             }
                         }
                     ],
                     "payslips": [
-                        {"$match": {"employee_payout": {"$gt": 0}}},
+                        {"$match": {"_eff_payout": {"$gt": 0}}},
                         {
                             "$group": {
                                 "_id": "$employee_id",
                                 "employee_name": {"$first": "$employee_name"},
-                                "total_payout": {"$sum": "$employee_payout"},
+                                "total_payout": {"$sum": "$_eff_payout"},
                                 "engagements": {"$sum": 1},
                             }
                         },
@@ -463,13 +487,23 @@ async def duty_report(
     postpaid_collected = 0
     postpaid_pending = 0
 
+    today = dt.date.today()
     items = []
     for a in assignments:
         cust = cust_map.get(a.customer_id)
         emp = emp_map.get(a.employee_id)
 
-        bill = a.customer_rate or 0
-        payout = a.employee_payout or 0
+        # Days billed: the full span for a closed engagement, or days elapsed so
+        # far for an ongoing one (so an open duty still shows accrued value).
+        if a.end_date:
+            eff_days = (a.end_date - a.start_date).days + 1
+        else:
+            eff_days = max(1, (today - a.start_date).days + 1)
+
+        # Prefer the stored total; for an ongoing duty (no stored total) derive
+        # it from the per-day rate × elapsed days so bill/pay are never ₹0.
+        bill = a.customer_rate if a.customer_rate is not None else (a.customer_daily_rate or 0) * eff_days
+        payout = a.employee_payout if a.employee_payout is not None else (a.employee_daily_rate or 0) * eff_days
         exp = a.other_expense or 0
         profit = bill - payout - exp
         margin = round(profit / bill * 100) if bill > 0 else 0
