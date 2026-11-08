@@ -58,9 +58,9 @@ class StaffRegisterRequest(BaseModel):
 
 
 class StaffLoginRequest(BaseModel):
-    """Staff portal credentials."""
+    """Staff portal credentials — log in with email OR mobile number."""
 
-    email: EmailStr
+    identifier: str = Field(..., min_length=1, description="Email or mobile number")
     password: str = Field(..., min_length=1)
 
 

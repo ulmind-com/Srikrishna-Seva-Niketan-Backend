@@ -396,17 +396,23 @@ async def login(
     response: Response,
     payload: StaffLoginRequest,
 ) -> dict:
-    """Authenticate a staff member with email + password."""
+    """Authenticate a staff member with email OR mobile number + password."""
     import asyncio
-    staff = await Employee.find_one({"email": payload.email.lower()})
-    # Same generic message whether the email is unknown or the password is
+    ident = payload.identifier.strip()
+    # Look up by email, then by primary/alternate mobile number.
+    staff = await Employee.find_one({"email": ident.lower()})
+    if staff is None:
+        staff = await Employee.find_one({"phone": ident})
+    if staff is None:
+        staff = await Employee.find_one({"alt_phone": ident})
+    # Same generic message whether the account is unknown or the password is
     # wrong, so the endpoint cannot be used to enumerate registered staff.
     if staff is None or not staff.hashed_password:
-        raise UnauthorizedException("Incorrect email or password")
+        raise UnauthorizedException("Incorrect email/mobile or password")
     
     password_ok = await asyncio.to_thread(verify_password, payload.password, staff.hashed_password)
     if not password_ok:
-        raise UnauthorizedException("Incorrect email or password")
+        raise UnauthorizedException("Incorrect email/mobile or password")
     if not staff.is_active:
         raise UnauthorizedException("Your account has been deactivated")
 
