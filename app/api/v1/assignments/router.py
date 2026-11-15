@@ -8,6 +8,7 @@ import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
+from pydantic import BaseModel
 
 from app.api.helpers import item_response, paginated_response
 from app.core.exceptions import BadRequestException
@@ -18,7 +19,13 @@ from app.dependencies.scoping import ensure_can_access
 from app.models.assignment import Assignment
 from app.models.customer import Customer
 from app.models.employee import Employee
-from app.models.enums import AssignmentStatus, EmployeeStatus, NotificationType
+from app.models.enums import (
+    AcceptanceStatus,
+    AssignmentStatus,
+    EmployeeStatus,
+    NotificationType,
+    PaymentStatus,
+)
 from app.models.location import Location
 from app.repositories.base import BaseRepository
 from app.schemas.assignment import (
@@ -469,9 +476,12 @@ async def _next_bill_no() -> int:
     """Atomically allocate the next sequential customer-bill number."""
     from pymongo import ReturnDocument
 
-    from app.database.connection import get_database
+    try:
+        from app.database.connection import get_database
+        db = get_database()
+    except Exception:
+        db = Assignment.get_motor_collection().database
 
-    db = get_database()
     res = await db["counters"].find_one_and_update(
         {"_id": "assignment_bill_no"},
         {"$inc": {"seq": 1}},
@@ -498,6 +508,174 @@ async def issue_bill(
         doc.touch()
         await doc.save()
     return success_response(data={"bill_no": doc.bill_no})
+
+
+class ReplaceStaffRequest(BaseModel):
+    new_employee_id: str
+    effective_date: dt.date
+    reason: Optional[str] = None
+    customer_daily_rate: Optional[int] = None
+    employee_daily_rate: Optional[int] = None
+    notes: Optional[str] = None
+
+
+@router.post("/{assignment_id}/replace-staff", summary="Replace staff on an assignment with handover")
+async def replace_assignment_staff(
+    assignment_id: str,
+    payload: ReplaceStaffRequest,
+    actor: ActorContext = Depends(require_permission("assignments", "update")),
+) -> dict:
+    """Replace an assigned nurse/attendant with a substitute nurse starting from effective_date.
+
+    - The previous staff's assignment is shortened to end the day before effective_date
+      (or cancelled if replaced on day 1), and their status is freed back to AVAILABLE.
+    - A new assignment is created for the substitute staff from effective_date to original end_date.
+    - Rate, shift, address, and customer details are transferred.
+    - Push and portal notifications are dispatched to the new staff.
+    - If linked to a booking, the booking's assigned staff is updated.
+    """
+    existing = await _assignments.get_or_404(assignment_id)
+    ensure_can_access(actor, existing.location_id)
+
+    if payload.effective_date < existing.start_date:
+        raise BadRequestException(
+            f"Replacement date ({payload.effective_date}) cannot be before current start date ({existing.start_date})"
+        )
+    if existing.end_date and payload.effective_date > existing.end_date:
+        raise BadRequestException(
+            f"Replacement date ({payload.effective_date}) cannot be after current end date ({existing.end_date})"
+        )
+
+    new_emp = await _employees.get(payload.new_employee_id)
+    if not new_emp:
+        raise BadRequestException("Replacement employee not found")
+    if str(new_emp.id) == existing.employee_id:
+        raise BadRequestException("Replacement staff must be different from current staff")
+
+    orig_end_date = existing.end_date
+    today = dt.date.today()
+
+    # 1. Update previous staff's assignment
+    if payload.effective_date == existing.start_date:
+        existing.status = AssignmentStatus.CANCELLED
+        note_suffix = f"Replaced by {new_emp.name} before starting. Reason: {payload.reason or 'Not specified'}"
+        existing.notes = f"{existing.notes} | {note_suffix}" if existing.notes else note_suffix
+        existing.touch()
+        await existing.save()
+        await _set_employee_status(existing.employee_id, EmployeeStatus.AVAILABLE)
+    else:
+        old_end_date = payload.effective_date - dt.timedelta(days=1)
+        existing.end_date = old_end_date
+        totals_dict = _derive_amounts(
+            {"customer_daily_rate": existing.customer_daily_rate, "employee_daily_rate": existing.employee_daily_rate},
+            existing.start_date,
+            old_end_date,
+            existing.customer_daily_rate,
+            existing.employee_daily_rate,
+        )
+        if "customer_rate" in totals_dict:
+            existing.customer_rate = totals_dict["customer_rate"]
+        if "employee_payout" in totals_dict:
+            existing.employee_payout = totals_dict["employee_payout"]
+
+        if old_end_date <= today:
+            existing.status = AssignmentStatus.COMPLETED
+            await _set_employee_status(existing.employee_id, EmployeeStatus.AVAILABLE)
+
+        note_suffix = f"Handed over to {new_emp.name} on {payload.effective_date}. Reason: {payload.reason or 'Staff emergency/leave'}"
+        existing.notes = f"{existing.notes} | {note_suffix}" if existing.notes else note_suffix
+        existing.touch()
+        await existing.save()
+
+    # 2. Create the new replacement assignment
+    cdr = payload.customer_daily_rate if payload.customer_daily_rate is not None else existing.customer_daily_rate
+    edr = payload.employee_daily_rate if payload.employee_daily_rate is not None else (new_emp.daily_rate or existing.employee_daily_rate)
+
+    new_data: dict = {
+        "customer_id": existing.customer_id,
+        "customer_name": existing.customer_name,
+        "employee_id": str(new_emp.id),
+        "employee_name": new_emp.name,
+        "location_id": existing.location_id,
+        "place_type": existing.place_type,
+        "place_name": existing.place_name,
+        "address": existing.address,
+        "dest_lat": existing.dest_lat,
+        "dest_lng": existing.dest_lng,
+        "shift": existing.shift,
+        "start_time": existing.start_time,
+        "end_time": existing.end_time,
+        "shift_windows": [w.model_dump() for w in existing.shift_windows] if existing.shift_windows else None,
+        "start_date": payload.effective_date,
+        "end_date": orig_end_date,
+        "customer_daily_rate": cdr,
+        "employee_daily_rate": edr,
+        "status": AssignmentStatus.SCHEDULED,
+        "acceptance_status": AcceptanceStatus.PENDING,
+        "payment_type": existing.payment_type,
+        "payment_status": PaymentStatus.PENDING,
+        "notes": f"Replacement for {existing.employee_name}. Reason: {payload.reason or 'Emergency/Leave'}"
+        + (f" | {payload.notes}" if payload.notes else ""),
+    }
+    _derive_amounts(new_data, payload.effective_date, orig_end_date)
+
+    new_assignment = await _assignments.create(new_data, actor)
+    await _set_employee_status(str(new_emp.id), EmployeeStatus.ASSIGNED)
+
+    # 3. Dispatches and alerts to new staff member
+    async def _dispatch_replacement_alerts():
+        try:
+            await notification_service.create(
+                title="Duty assignment (Replacement)",
+                message=f"You are assigned to {existing.customer_name} ({_place_text(new_assignment)}, {new_assignment.shift} shift) from {new_assignment.start_date.isoformat()} replacing {existing.employee_name}.",
+                type=NotificationType.ASSIGNMENT,
+                employee_id=str(new_emp.id),
+                reference_id=str(new_assignment.id),
+            )
+        except Exception as err:
+            logger.warning("Replacement notification dispatch note: %s", err)
+
+        if new_emp.email:
+            try:
+                await email_service.send_assignment_notice(
+                    to=new_emp.email,
+                    staff_name=new_emp.name,
+                    customer_name=existing.customer_name,
+                    shift=str(new_assignment.shift),
+                    place=_place_text(new_assignment),
+                    start_date=new_assignment.start_date.isoformat(),
+                    end_date=new_assignment.end_date.isoformat() if new_assignment.end_date else "Ongoing",
+                )
+            except Exception as err:
+                logger.warning("Replacement email notice note: %s", err)
+
+    asyncio.create_task(_dispatch_replacement_alerts())
+
+    # 4. Sync linked booking if any
+    try:
+        from app.models.booking import Booking, BookingStatus
+        booking = await Booking.find_one({
+            "customer_id": existing.customer_id,
+            "status": {"$in": [BookingStatus.ASSIGNED, BookingStatus.IN_PROGRESS, BookingStatus.CONFIRMED]},
+        })
+        if booking:
+            booking.assigned_staff_id = str(new_emp.id)
+            booking.assigned_staff_name = new_emp.name
+            booking.touch()
+            await booking.save()
+    except Exception as err:
+        logger.warning("Could not sync booking staff on replacement: %s", err)
+
+    from app.services.dashboard_service import invalidate_dashboard_cache
+    invalidate_dashboard_cache()
+
+    return success_response(
+        data={
+            "previous_assignment": AssignmentResponse.model_validate(existing).model_dump(mode="json"),
+            "new_assignment": AssignmentResponse.model_validate(new_assignment).model_dump(mode="json"),
+        },
+        message=f"Successfully replaced {existing.employee_name} with {new_emp.name} from {payload.effective_date.isoformat()}",
+    )
 
 
 @router.delete("/{assignment_id}", summary="Delete assignment")

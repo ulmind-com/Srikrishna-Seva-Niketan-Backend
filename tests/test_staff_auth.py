@@ -35,7 +35,7 @@ async def _register(client) -> dict:
         ).insert()
     resp = await client.post(
         "/api/v1/staff-portal/login",
-        json={"email": email, "password": "StaffPass@123"},
+        json={"identifier": email, "password": "StaffPass@123"},
     )
     assert resp.status_code == 200, resp.text
     return resp

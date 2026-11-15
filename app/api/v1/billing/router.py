@@ -67,7 +67,7 @@ def _daily_rate(a: Assignment) -> int:
 async def _compute_month(
     actor: ActorContext, month: str, location_id: Optional[str]
 ) -> list[dict]:
-    """Group month-overlapping assignments by (nurse, customer) into bills."""
+    """Group month-overlapping assignments by customer into monthly bills."""
     m_start, m_end = _month_bounds(month)
     m_start_dt = dt.datetime.combine(m_start, dt.time.min)
     m_end_dt = dt.datetime.combine(m_end, dt.time.min)
@@ -103,24 +103,22 @@ async def _compute_month(
     locations = {str(loc.id): loc for loc in await Location.find({}).to_list()}
     issued = {mb.key: mb for mb in await MonthlyBill.find({"month": month}).to_list()}
 
-    groups: dict[tuple[str, str], dict] = {}
+    # Group by customer so one customer receives ONE consolidated monthly bill,
+    # even when duty was split across multiple staff members (e.g. replacement).
+    groups: dict[str, dict] = {}
     for a in assignments:
         days = _overlap_days(a.start_date, a.end_date, m_start, m_end)
         if days <= 0:
             continue
         rate = _daily_rate(a)
         amount = rate * days
-        key = (a.employee_id, a.customer_id)
-        g = groups.get(key)
+        cust_id = str(a.customer_id)
+        g = groups.get(cust_id)
         if g is None:
             cust = customers.get(a.customer_id)
-            emp = employees.get(a.employee_id)
             loc = locations.get(a.location_id)
             g = {
-                "key": f"{a.employee_id}:{a.customer_id}:{month}",
-                "employee_id": a.employee_id,
-                "employee_name": emp.name if emp else a.employee_name,
-                "employee_code": emp.code if emp else None,
+                "key": f"{a.customer_id}:{month}",
                 "customer_id": a.customer_id,
                 "customer_name": cust.name if cust else a.customer_name,
                 "customer_phone": cust.phone if cust else None,
@@ -128,16 +126,28 @@ async def _compute_month(
                 "customer_address": (cust.address if cust else None) or a.address,
                 "location_id": a.location_id,
                 "location_name": loc.name if loc else None,
+                "employee_id": a.employee_id,
+                "employee_name": "",
+                "employee_code": None,
+                "employee_names": [],
                 "line_items": [],
                 "total_days": 0,
                 "total_amount": 0,
             }
-            groups[key] = g
+            groups[cust_id] = g
+
+        emp = employees.get(a.employee_id)
+        emp_name = emp.name if emp else a.employee_name
+        emp_code = emp.code if emp else None
+
         row_start = max(a.start_date, m_start)
         row_end = min(a.end_date or m_end, m_end)
         g["line_items"].append(
             {
                 "assignment_id": str(a.id),
+                "employee_id": a.employee_id,
+                "employee_name": emp_name,
+                "employee_code": emp_code,
                 "from": row_start.isoformat(),
                 "to": row_end.isoformat(),
                 "shift": a.shift.value,
@@ -150,18 +160,35 @@ async def _compute_month(
                 "amount": amount,
             }
         )
+        if emp_name and emp_name not in g["employee_names"]:
+            g["employee_names"].append(emp_name)
         g["total_days"] += days
         g["total_amount"] += amount
 
     result = list(groups.values())
     for g in result:
+        # Sort line items chronologically
+        g["line_items"].sort(key=lambda li: li["from"])
+        g["employee_name"] = ", ".join(g["employee_names"])
+        if len(g["employee_names"]) == 1 and g["line_items"]:
+            g["employee_code"] = g["line_items"][0]["employee_code"]
+        elif len(g["employee_names"]) > 1:
+            g["employee_code"] = f"{len(g['employee_names'])} Staff"
+
+        # Check if bill number already allocated (modern customer key, or legacy emp:cust key)
         mb = issued.get(g["key"])
+        if not mb:
+            for li in g["line_items"]:
+                mb = issued.get(f"{li['employee_id']}:{g['customer_id']}:{month}")
+                if mb:
+                    break
         g["bill_no"] = mb.bill_no if mb else None
-    result.sort(key=lambda g: ((g["employee_name"] or "").lower(), (g["customer_name"] or "").lower()))
+
+    result.sort(key=lambda g: (g["customer_name"] or "").lower())
     return result
 
 
-@router.get("/monthly", summary="Monthly per-nurse customer bills")
+@router.get("/monthly", summary="Monthly customer bills")
 async def monthly_bills(
     month: str = Query(..., description="Billing month, YYYY-MM"),
     location_id: Optional[str] = Query(None),
@@ -179,9 +206,12 @@ async def monthly_bills(
 async def _next_monthly_bill_no() -> int:
     from pymongo import ReturnDocument
 
-    from app.database.connection import get_database
+    try:
+        from app.database.connection import get_database
+        db = get_database()
+    except Exception:
+        db = MonthlyBill.get_motor_collection().database
 
-    db = get_database()
     res = await db["counters"].find_one_and_update(
         {"_id": "monthly_bill_no"},
         {"$inc": {"seq": 1}},
@@ -193,8 +223,8 @@ async def _next_monthly_bill_no() -> int:
 
 class IssueMonthlyBillRequest(BaseModel):
     month: str
-    employee_id: str
     customer_id: str
+    employee_id: Optional[str] = None
 
 
 @router.post("/monthly/issue", summary="Allocate a monthly bill number")
@@ -202,22 +232,26 @@ async def issue_monthly_bill(
     payload: IssueMonthlyBillRequest,
     actor: ActorContext = Depends(require_permission("assignments", "view")),
 ) -> dict:
-    """Allocate (or reuse) the bill number for one nurse+customer month bill."""
-    key = f"{payload.employee_id}:{payload.customer_id}:{payload.month}"
+    """Allocate (or reuse) the bill number for one customer's monthly bill."""
+    key = f"{payload.customer_id}:{payload.month}"
     existing = await MonthlyBill.find_one({"key": key})
+    if existing is None and payload.employee_id:
+        existing = await MonthlyBill.find_one(
+            {"key": f"{payload.employee_id}:{payload.customer_id}:{payload.month}"}
+        )
     if existing is not None:
         return success_response(data={"bill_no": existing.bill_no})
 
     # Recompute the group so the snapshot + scope check are honest.
     bills = await _compute_month(actor, payload.month, None)
-    group = next((b for b in bills if b["key"] == key), None)
+    group = next((b for b in bills if b["customer_id"] == payload.customer_id), None)
     if group is None:
-        raise BadRequestException("No billable duty for this nurse/customer this month")
+        raise BadRequestException("No billable duty for this customer this month")
 
     bill_no = await _next_monthly_bill_no()
     mb = MonthlyBill(
         key=key,
-        employee_id=payload.employee_id,
+        employee_id=payload.employee_id or group.get("employee_id") or "multiple",
         customer_id=payload.customer_id,
         location_id=group.get("location_id"),
         month=payload.month,

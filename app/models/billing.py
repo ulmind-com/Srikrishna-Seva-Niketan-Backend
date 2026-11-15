@@ -17,10 +17,10 @@ from app.models.base import TimestampedDocument
 
 
 class MonthlyBill(TimestampedDocument):
-    # Stable composite key: "<employee_id>:<customer_id>:<YYYY-MM>".
+    # Stable composite key: "<customer_id>:<YYYY-MM>" (or legacy "<employee_id>:<customer_id>:<YYYY-MM>").
     key: Indexed(str, unique=True)  # type: ignore[valid-type]
-    employee_id: str
     customer_id: str
+    employee_id: Optional[str] = None
     location_id: Optional[str] = None
     month: str  # "YYYY-MM"
     bill_no: int
