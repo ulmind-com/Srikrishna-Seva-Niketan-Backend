@@ -515,6 +515,10 @@ async def issue_bill(
 class ReplaceStaffRequest(BaseModel):
     new_employee_id: str
     effective_date: dt.date
+    end_date: Optional[dt.date] = None
+    shift: Optional[ShiftType] = None
+    start_time: Optional[str] = None
+    end_time: Optional[str] = None
     reason: Optional[str] = None
     customer_daily_rate: Optional[int] = None
     employee_daily_rate: Optional[int] = None
@@ -525,6 +529,10 @@ class BatchReplaceItem(BaseModel):
     assignment_id: str
     new_employee_id: str
     effective_date: dt.date
+    end_date: Optional[dt.date] = None
+    shift: Optional[ShiftType] = None
+    start_time: Optional[str] = None
+    end_time: Optional[str] = None
     reason: Optional[str] = None
     customer_daily_rate: Optional[int] = None
     employee_daily_rate: Optional[int] = None
@@ -633,6 +641,11 @@ async def _perform_staff_replacement(
     cdr = payload.customer_daily_rate if payload.customer_daily_rate is not None else existing.customer_daily_rate
     edr = payload.employee_daily_rate if payload.employee_daily_rate is not None else (new_emp.daily_rate or existing.employee_daily_rate)
 
+    target_shift = payload.shift or existing.shift
+    target_start_time = payload.start_time if payload.start_time is not None else existing.start_time
+    target_end_time = payload.end_time if payload.end_time is not None else existing.end_time
+    target_end_date = payload.end_date if payload.end_date is not None else orig_end_date
+
     new_data: dict = {
         "customer_id": existing.customer_id,
         "customer_name": existing.customer_name,
@@ -644,12 +657,12 @@ async def _perform_staff_replacement(
         "address": existing.address,
         "dest_lat": existing.dest_lat,
         "dest_lng": existing.dest_lng,
-        "shift": existing.shift,
-        "start_time": existing.start_time,
-        "end_time": existing.end_time,
+        "shift": target_shift,
+        "start_time": target_start_time,
+        "end_time": target_end_time,
         "shift_windows": [w.model_dump() for w in existing.shift_windows] if existing.shift_windows else None,
         "start_date": payload.effective_date,
-        "end_date": orig_end_date,
+        "end_date": target_end_date,
         "customer_daily_rate": cdr,
         "employee_daily_rate": edr,
         "status": AssignmentStatus.SCHEDULED,
@@ -663,23 +676,42 @@ async def _perform_staff_replacement(
         "notes": f"Replacement for {existing.employee_name}. Reason: {payload.reason or 'Emergency/Leave'}"
         + (f" | {payload.notes}" if payload.notes else ""),
     }
-    _derive_amounts(new_data, payload.effective_date, orig_end_date)
+    _derive_amounts(new_data, payload.effective_date, target_end_date)
 
     new_assignment = await _assignments.create(new_data, actor)
     await _set_employee_status(str(new_emp.id), EmployeeStatus.ASSIGNED)
 
-    # 3. Dispatches and alerts to new staff member
+    # 3. Dispatches and alerts to new staff member and relieved staff member
     async def _dispatch_replacement_alerts():
+        shift_str = target_shift.value if hasattr(target_shift, "value") else str(target_shift)
+        timing_str = f" ({target_start_time} - {target_end_time})" if (target_start_time and target_end_time) else ""
+        date_str = f"from {new_assignment.start_date.isoformat()}" + (f" to {target_end_date.isoformat()}" if target_end_date else " (Ongoing)")
+
+        # 1. Alert to the new replacement nurse
         try:
             await notification_service.create(
-                title="Duty assignment (Replacement)",
-                message=f"You are assigned to {existing.customer_name} ({_place_text(new_assignment)}, {new_assignment.shift} shift) from {new_assignment.start_date.isoformat()} replacing {existing.employee_name}.",
+                title="🚨 New Duty Assignment (Replacement)",
+                message=f"You are assigned to {existing.customer_name} ({_place_text(new_assignment)}, Shift: {shift_str}{timing_str}, {date_str}) replacing {existing.employee_name}.",
                 type=NotificationType.ASSIGNMENT,
                 employee_id=str(new_emp.id),
                 reference_id=str(new_assignment.id),
+                link="/staff/status",
             )
         except Exception as err:
             logger.warning("Replacement notification dispatch note: %s", err)
+
+        # 2. Notice to the relieved previous nurse
+        try:
+            await notification_service.create(
+                title="ℹ️ Duty Handover / Replacement Notice",
+                message=f"Your duty for {existing.customer_name} has been handed over to {new_emp.name} effective {payload.effective_date.isoformat()}.",
+                type=NotificationType.ASSIGNMENT,
+                employee_id=str(existing.employee_id),
+                reference_id=str(existing.id),
+                link="/staff/status",
+            )
+        except Exception as err:
+            logger.warning("Handover notice dispatch note: %s", err)
 
         if new_emp.email:
             try:
@@ -687,7 +719,7 @@ async def _perform_staff_replacement(
                     to=new_emp.email,
                     staff_name=new_emp.name,
                     customer_name=existing.customer_name,
-                    shift=str(new_assignment.shift),
+                    shift=f"{shift_str}{timing_str}",
                     place=_place_text(new_assignment),
                     start_date=new_assignment.start_date.isoformat(),
                     end_date=new_assignment.end_date.isoformat() if new_assignment.end_date else "Ongoing",
@@ -728,6 +760,10 @@ async def batch_replace_staff(
         req = ReplaceStaffRequest(
             new_employee_id=item.new_employee_id,
             effective_date=item.effective_date,
+            end_date=item.end_date,
+            shift=item.shift,
+            start_time=item.start_time,
+            end_time=item.end_time,
             reason=item.reason,
             customer_daily_rate=item.customer_daily_rate,
             employee_daily_rate=item.employee_daily_rate,
@@ -804,18 +840,36 @@ async def multi_staff_assign(
         await _set_employee_status(str(emp.id), EmployeeStatus.ASSIGNED)
         created_assignments.append(asg)
 
-        # Dispatch alert
+        # Dispatch alert and transactional notifications
         async def _alert(target_emp=emp, target_asg=asg):
             try:
+                shift_desc = f"{target_asg.shift}"
+                if target_asg.start_time and target_asg.end_time:
+                    shift_desc += f" ({target_asg.start_time} - {target_asg.end_time})"
                 await notification_service.create(
-                    title="New Duty Assignment",
-                    message=f"You are assigned to {customer.name} ({target_asg.shift} shift) from {target_asg.start_date.isoformat()}.",
+                    title="🚨 New Duty Assignment",
+                    message=f"You are assigned to {customer.name} (Shift: {shift_desc}) from {target_asg.start_date.isoformat()}.",
                     type=NotificationType.ASSIGNMENT,
                     employee_id=str(target_emp.id),
                     reference_id=str(target_asg.id),
+                    link="/staff/status",
                 )
             except Exception as e:
                 logger.warning("Push alert note: %s", e)
+
+            if target_emp.email:
+                try:
+                    await email_service.send_assignment_notice(
+                        to=target_emp.email,
+                        staff_name=target_emp.name,
+                        customer_name=customer.name,
+                        shift=str(target_asg.shift),
+                        place=_place_text(target_asg),
+                        start_date=target_asg.start_date.isoformat(),
+                        end_date=target_asg.end_date.isoformat() if target_asg.end_date else "Ongoing",
+                    )
+                except Exception as e:
+                    logger.warning("Assignment email notice note: %s", e)
 
         asyncio.create_task(_alert())
 

@@ -224,3 +224,66 @@ async def test_batch_replace_multiple_staff(client: AsyncClient, auth_headers: d
     assert len(multi_data["items"]) == 2
 
 
+@pytest.mark.asyncio
+async def test_replace_staff_with_shift_timing_and_dates(client: AsyncClient, auth_headers: dict):
+    headers = auth_headers
+    loc = Location(name="Shift Timing Branch", code="STB01", city="Kolkata", is_active=True)
+    await loc.insert()
+    loc_id = str(loc.id)
+
+    cust = Customer(name="Time Test Customer", code="CUST-TT01", phone="9988776655", location_id=loc_id, is_active=True)
+    await cust.insert()
+    cust_id = str(cust.id)
+
+    emp_orig = Employee(name="Nurse Original", phone="9000000001", code="NO01", category="nurse", location_id=loc_id, is_active=True)
+    emp_new = Employee(name="Nurse Replacement", phone="9000000002", code="NR02", category="nurse", location_id=loc_id, is_active=True)
+    await emp_orig.insert()
+    await emp_new.insert()
+
+    # Create initial assignment: Day shift
+    orig_asg = Assignment(
+        customer_id=cust_id,
+        customer_name=cust.name,
+        employee_id=str(emp_orig.id),
+        employee_name=emp_orig.name,
+        location_id=loc_id,
+        shift=ShiftType.DAY,
+        start_time="08:00",
+        end_time="20:00",
+        start_date=dt.date(2026, 11, 1),
+        end_date=dt.date(2026, 11, 30),
+        customer_daily_rate=1500,
+        employee_daily_rate=800,
+        status=AssignmentStatus.ACTIVE,
+    )
+    await orig_asg.insert()
+
+    # Replace with custom shift and new timing
+    rep_res = await client.post(
+        f"/api/v1/assignments/{orig_asg.id}/replace-staff",
+        json={
+            "new_employee_id": str(emp_new.id),
+            "effective_date": "2026-11-15",
+            "end_date": "2026-11-28",
+            "shift": "night",
+            "start_time": "20:00",
+            "end_time": "08:00",
+            "reason": "Shift swapped due to family event",
+        },
+        headers=headers,
+    )
+    assert rep_res.status_code == 200, rep_res.text
+    rep_data = rep_res.json()["data"]
+
+    new_asg = rep_data["new_assignment"]
+    assert new_asg["employee_name"] == "Nurse Replacement"
+    assert new_asg["shift"] == "night"
+    assert new_asg["start_time"] == "20:00"
+    assert new_asg["end_time"] == "08:00"
+    assert new_asg["start_date"] == "2026-11-15"
+    assert new_asg["end_date"] == "2026-11-28"
+    assert new_asg["is_replacement"] is True
+    assert new_asg["replacement_for_employee_name"] == "Nurse Original"
+
+
+
