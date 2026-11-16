@@ -30,6 +30,26 @@ def today_ist() -> dt.date:
     return dt.datetime.now(_IST).date()
 
 
+def _effective_assignment_end(a: Assignment, cap: dt.date) -> dt.date:
+    """Determine the final date of an assignment for payroll attendance purposes.
+
+    Open-ended assignments run up to the cap (today or month-end).
+    Assignments marked COMPLETED that lack an explicit end_date are capped to their
+    actual worked span rather than running indefinitely into the future.
+    """
+    if a.end_date is not None:
+        return min(a.end_date, cap)
+    if a.status == AssignmentStatus.COMPLETED:
+        if a.days_worked:
+            return min(a.start_date + dt.timedelta(days=max(a.days_worked - 1, 0)), cap)
+        if a.shift_windows and len(a.shift_windows) > 1:
+            return min(a.start_date + dt.timedelta(days=len(a.shift_windows) - 1), cap)
+        if a.start_time and a.end_time and a.end_time <= a.start_time:
+            return min(a.start_date + dt.timedelta(days=1), cap)
+        return min(a.start_date, cap)
+    return cap
+
+
 async def materialize_from_assignments(
     first: dt.date, last: dt.date, location_ids: Optional[List[str]] = None
 ) -> int:
@@ -85,9 +105,22 @@ async def materialize_from_assignments(
             continue
         rate = a.employee_daily_rate if a.employee_daily_rate is not None else emp.daily_rate
         a_start = max(a.start_date, first)
-        a_end = min(a.end_date or cap, cap)
+        a_end = _effective_assignment_end(a, cap)
+        total_assignment_days = max((a_end - a.start_date).days + 1, 1)
         day = a_start
         while day <= a_end:
+            day_idx = (day - a.start_date).days
+            day_start_time = a.start_time
+            day_end_time = a.end_time
+            day_windows = a.shift_windows
+
+            # If the assignment specifies distinct per-day shift windows (e.g. Day 1 overnight, Day 2 day shift)
+            if a.shift_windows and len(a.shift_windows) == total_assignment_days and 0 <= day_idx < len(a.shift_windows):
+                w = a.shift_windows[day_idx]
+                day_start_time = w.start
+                day_end_time = w.end
+                day_windows = [w]
+
             key_day = (a.employee_id, day)
             key_syn = (a.employee_id, day, str(a.id))
             if key_day not in handmarked and key_syn not in synced:
@@ -99,9 +132,9 @@ async def materialize_from_assignments(
                         date=day,
                         status=AttendanceStatus.PRESENT,
                         shift=a.shift,
-                        start_time=a.start_time,
-                        end_time=a.end_time,
-                        shift_windows=a.shift_windows,
+                        start_time=day_start_time,
+                        end_time=day_end_time,
+                        shift_windows=day_windows,
                         assignment_id=str(a.id),
                         customer_name=a.customer_name,
                         pay_rate=rate,

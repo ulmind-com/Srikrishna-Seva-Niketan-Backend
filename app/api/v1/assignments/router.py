@@ -354,6 +354,14 @@ async def create_assignment(
     data = payload.model_dump(exclude_unset=True)
     data = _apply_duration(data, payload.start_date)
     data = _sync_shift_times(data)
+    if data.get("status") == AssignmentStatus.COMPLETED and not data.get("end_date"):
+        windows = data.get("shift_windows")
+        if windows and len(windows) > 1:
+            data["end_date"] = payload.start_date + dt.timedelta(days=len(windows) - 1)
+        elif data.get("end_time") and data.get("start_time") and data["end_time"] <= data["start_time"]:
+            data["end_date"] = payload.start_date + dt.timedelta(days=1)
+        else:
+            data["end_date"] = payload.start_date
     data["location_id"] = branch_id
     data["customer_name"] = customer.name
     data["employee_name"] = employee.name
@@ -436,6 +444,16 @@ async def update_assignment(
     data = _apply_duration(data, data.get("start_date") or existing.start_date)
     if "shift_windows" in data:
         data = _sync_shift_times(data)
+    start_d = data.get("start_date") or existing.start_date
+    current_status = data.get("status") or existing.status
+    if current_status == AssignmentStatus.COMPLETED and not data.get("end_date") and not existing.end_date:
+        windows = data.get("shift_windows") or existing.shift_windows
+        if windows and len(windows) > 1:
+            data["end_date"] = start_d + dt.timedelta(days=len(windows) - 1)
+        elif (data.get("end_time") or existing.end_time) and (data.get("start_time") or existing.start_time) and (data.get("end_time") or existing.end_time) <= (data.get("start_time") or existing.start_time):
+            data["end_date"] = start_d + dt.timedelta(days=1)
+        else:
+            data["end_date"] = start_d
     # Recompute stored totals when the dates or per-day rates change.
     _derive_amounts(
         data,
