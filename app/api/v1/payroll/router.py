@@ -181,8 +181,12 @@ async def day_roster(
     records: list[dict] = []
     for a in items:
         try:
-            records.append(AttendanceResponse.model_validate(a).model_dump(mode="json"))
-            counts[a.status.value] = counts.get(a.status.value, 0) + 1
+            dumped = AttendanceResponse.model_validate(a).model_dump(mode="json")
+            if dumped.get("status") == "leave":
+                dumped["status"] = "off"
+            records.append(dumped)
+            status_val = "off" if a.status.value == "leave" else a.status.value
+            counts[status_val] = counts.get(status_val, 0) + 1
         except Exception as exc:
             logger.warning("Skipping attendance row in roster serialize: %s", exc)
 
@@ -193,7 +197,6 @@ async def day_roster(
                 "marked": len(records),
                 "present": counts.get("present", 0),
                 "half_day": counts.get("half_day", 0),
-                "leave": counts.get("leave", 0),
                 "off": counts.get("off", 0),
                 "absent": counts.get("absent", 0),
             },

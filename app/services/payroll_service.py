@@ -218,11 +218,7 @@ def _summarize(records: Sequence[AttendanceRecord], fallback_rate: Optional[int]
         elif r.status == AttendanceStatus.HALF_DAY:
             half += 1
             by_shift[r.shift.value] = by_shift.get(r.shift.value, 0) + 1
-        elif r.status == AttendanceStatus.LEAVE:
-            leave += 1
-            leave_deduction += (r.pay_rate if r.pay_rate is not None else fallback_rate) or 0
-            off_dates.append(r.date.isoformat())
-        elif r.status == AttendanceStatus.OFF:
+        elif r.status == AttendanceStatus.LEAVE or r.status == AttendanceStatus.OFF:
             off += 1
             off_dates.append(r.date.isoformat())
         elif r.status == AttendanceStatus.ABSENT:
@@ -305,7 +301,7 @@ async def build_payslip(
             daily.append(
                 {
                     "date": day.isoformat(),
-                    "status": rec.status.value,
+                    "status": "off" if rec.status == AttendanceStatus.LEAVE else rec.status.value,
                     "shift": rec.shift.value,
                     "start_time": rec.start_time,
                     "end_time": rec.end_time,
