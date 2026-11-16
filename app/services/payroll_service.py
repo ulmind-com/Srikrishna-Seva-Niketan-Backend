@@ -192,68 +192,68 @@ def _date_amount(rows: Sequence[AttendanceRecord], fallback_rate: Optional[int])
 def _summarize(records: Sequence[AttendanceRecord], fallback_rate: Optional[int]) -> dict:
     """Aggregate one employee's records into payslip totals.
 
-    Pay is **per calendar date** (one day = one pay), so a two-shift day is paid
-    once. ``present_days`` / ``by_shift`` still count shift rows (so the admin
-    can see two shifts ran), while pay and ``worked_days`` are date-based.
+    A staff member can work multiple shifts/timings on the same calendar day.
+    - Day counts (present_days, half_days, absent_days, off_days, worked_days, payable_days)
+      are based on calendar dates: one worked date = 1 day present.
+    - total_shifts and by_shift count individual shift duties worked across those days.
     """
-    present = half = leave = off = absent = 0
-    gross = 0
-    leave_deduction = 0  # salary the staff would have earned on leave days
-    by_shift: Dict[str, int] = {}
-    off_dates: List[str] = []
-    absent_dates: List[str] = []
-    present_dates: set = set()
-    half_only_dates: set = set()
-    marked_dates: set = set()
-
     by_date: Dict[dt.date, List[AttendanceRecord]] = {}
     for r in records:
         by_date.setdefault(r.date, []).append(r)
 
+    by_shift: Dict[str, int] = {}
+    total_shifts = 0
     for r in records:
-        marked_dates.add(r.date)
-        if r.status == AttendanceStatus.PRESENT:
-            present += 1
+        if r.status in (AttendanceStatus.PRESENT, AttendanceStatus.HALF_DAY):
+            total_shifts += 1
             by_shift[r.shift.value] = by_shift.get(r.shift.value, 0) + 1
-        elif r.status == AttendanceStatus.HALF_DAY:
-            half += 1
-            by_shift[r.shift.value] = by_shift.get(r.shift.value, 0) + 1
-        elif r.status == AttendanceStatus.LEAVE or r.status == AttendanceStatus.OFF:
-            off += 1
-            off_dates.append(r.date.isoformat())
-        elif r.status == AttendanceStatus.ABSENT:
-            absent += 1
-            absent_dates.append(r.date.isoformat())
+
+    present_dates: set[dt.date] = set()
+    half_only_dates: set[dt.date] = set()
+    absent_dates: set[dt.date] = set()
+    off_dates: set[dt.date] = set()
+    marked_dates: set[dt.date] = set(by_date.keys())
+    gross = 0
 
     # Pay once per date (highest shift rate), never per shift row.
     for day, rows in by_date.items():
         has_present = any(x.status == AttendanceStatus.PRESENT for x in rows)
         has_half = any(x.status == AttendanceStatus.HALF_DAY for x in rows)
+        has_absent = any(x.status == AttendanceStatus.ABSENT for x in rows)
+        has_off = any(x.status in (AttendanceStatus.OFF, AttendanceStatus.LEAVE) for x in rows)
+
         if has_present:
             present_dates.add(day)
         elif has_half:
             half_only_dates.add(day)
+        elif has_absent:
+            absent_dates.add(day)
+        elif has_off:
+            off_dates.add(day)
+
         gross += _date_amount(rows, fallback_rate)
 
-    payable_days = len(present_dates) + len(half_only_dates) * 0.5
+    present_count = len(present_dates)
+    half_count = len(half_only_dates)
+    worked_count = present_count + half_count
+    payable_days = present_count + half_count * 0.5
+
     return {
-        # Per-row counts (pay context — two shifts on a day count twice).
-        "present_days": present,
-        "half_days": half,
-        "leave_days": leave,
-        "off_days": off,
-        "absent_days": absent,
-        # Distinct dates actually worked (present or half).
-        "worked_days": len(present_dates),
-        # Distinct dates with any record.
+        "present_days": present_count,
+        "total_shifts": total_shifts,
+        "half_days": half_count,
+        "leave_days": 0,
+        "off_days": len(off_dates),
+        "absent_days": len(absent_dates),
+        "worked_days": worked_count,
         "marked_days": len(marked_dates),
         "payable_days": payable_days,
         "gross_pay": gross,
-        "leave_deduction": leave_deduction,
+        "leave_deduction": 0,
         "net_payable": gross,
         "by_shift": by_shift,
-        "off_dates": off_dates,
-        "absent_dates": absent_dates,
+        "off_dates": [d.isoformat() for d in sorted(off_dates)],
+        "absent_dates": [d.isoformat() for d in sorted(absent_dates)],
     }
 
 
@@ -267,6 +267,11 @@ async def build_payslip(
     for r in records:
         by_date.setdefault(r.date, []).append(r)
     fallback_rate = employee.daily_rate
+    if fallback_rate is None:
+        for r in records:
+            if r.pay_rate:
+                fallback_rate = r.pay_rate
+                break
 
     daily: List[dict] = []
     for d in range(1, days + 1):
@@ -323,7 +328,7 @@ async def build_payslip(
             "name": employee.name,
             "code": employee.code,
             "category": employee.category,
-            "daily_rate": employee.daily_rate,
+            "daily_rate": fallback_rate,
             "photo": employee.photo.model_dump(mode="json") if employee.photo else None,
             "location_id": employee.location_id,
         },
@@ -369,7 +374,14 @@ async def payroll_run(
     total_gross = 0
     for e in sorted(employees, key=lambda x: x.name.lower()):
         eid = str(e.id)
-        summary = _summarize(grouped.get(eid, []), e.daily_rate)
+        emp_records = grouped.get(eid, [])
+        rate = e.daily_rate
+        if rate is None:
+            for r in emp_records:
+                if r.pay_rate:
+                    rate = r.pay_rate
+                    break
+        summary = _summarize(emp_records, rate)
         total_gross += summary["gross_pay"]
         rows.append(
             {
@@ -377,9 +389,10 @@ async def payroll_run(
                 "name": e.name,
                 "code": e.code,
                 "category": e.category,
-                "daily_rate": e.daily_rate,
+                "daily_rate": rate,
                 "location_id": e.location_id,
                 "present_days": summary["present_days"],
+                "total_shifts": summary.get("total_shifts", summary["present_days"]),
                 "half_days": summary["half_days"],
                 "leave_days": summary["leave_days"],
                 "off_days": summary["off_days"],
