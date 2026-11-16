@@ -149,3 +149,78 @@ async def test_replace_staff_and_consolidated_monthly_bill(
         headers=headers,
     )
     assert issue_res_repeat.json()["data"]["bill_no"] == issued_no
+
+
+@pytest.mark.asyncio
+async def test_batch_replace_multiple_staff(client: AsyncClient, auth_headers: dict):
+    headers = auth_headers
+    loc = Location(name="Batch Branch", code="BB01", city="Kolkata", is_active=True)
+    await loc.insert()
+    loc_id = str(loc.id)
+
+    cust = Customer(name="Multi Staff Patient", code="CUST-MULTI", phone="9876543210", location_id=loc_id, billing_rate=2000)
+    await cust.insert()
+    cust_id = str(cust.id)
+
+    # 4 staff members
+    staff_ids = []
+    for i in range(1, 5):
+        emp = Employee(name=f"Nurse {i}", code=f"N-{i}", location_id=loc_id, is_active=True, status=EmployeeStatus.AVAILABLE)
+        await emp.insert()
+        staff_ids.append(str(emp.id))
+
+    # Assign 2 nurses (Nurse 1 Day, Nurse 2 Night)
+    asg1_res = await client.post(
+        "/api/v1/assignments",
+        json={
+            "customer_id": cust_id, "employee_id": staff_ids[0], "location_id": loc_id,
+            "shift": "day", "start_date": "2026-11-01", "end_date": "2026-11-30",
+        },
+        headers=headers,
+    )
+    asg2_res = await client.post(
+        "/api/v1/assignments",
+        json={
+            "customer_id": cust_id, "employee_id": staff_ids[1], "location_id": loc_id,
+            "shift": "night", "start_date": "2026-11-01", "end_date": "2026-11-30",
+        },
+        headers=headers,
+    )
+    a1_id, a2_id = asg1_res.json()["data"]["id"], asg2_res.json()["data"]["id"]
+
+    # Both Nurse 1 and Nurse 2 have emergencies: replace BOTH simultaneously with Nurse 3 and Nurse 4!
+    batch_res = await client.post(
+        "/api/v1/assignments/batch-replace",
+        json={
+            "replacements": [
+                {"assignment_id": a1_id, "new_employee_id": staff_ids[2], "effective_date": "2026-11-16", "reason": "Emergency 1"},
+                {"assignment_id": a2_id, "new_employee_id": staff_ids[3], "effective_date": "2026-11-16", "reason": "Emergency 2"},
+            ]
+        },
+        headers=headers,
+    )
+    assert batch_res.status_code == 200, batch_res.text
+    batch_data = batch_res.json()["data"]
+    assert batch_data["count"] == 2
+    assert len(batch_data["items"]) == 2
+
+    # Test multi_staff_assign: assign 2 new nurses at once to the same customer
+    multi_res = await client.post(
+        "/api/v1/assignments/multi-assign",
+        json={
+            "customer_id": cust_id,
+            "start_date": "2026-12-01",
+            "duration_days": 15,
+            "staff_list": [
+                {"employee_id": staff_ids[0], "shift": "day"},
+                {"employee_id": staff_ids[1], "shift": "night"},
+            ],
+        },
+        headers=headers,
+    )
+    assert multi_res.status_code == 200, multi_res.text
+    multi_data = multi_res.json()["data"]
+    assert multi_data["count"] == 2
+    assert len(multi_data["items"]) == 2
+
+

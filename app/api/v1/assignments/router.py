@@ -21,10 +21,12 @@ from app.models.customer import Customer
 from app.models.employee import Employee
 from app.models.enums import (
     AcceptanceStatus,
+    AssignmentPlace,
     AssignmentStatus,
     EmployeeStatus,
     NotificationType,
     PaymentStatus,
+    ShiftType,
 )
 from app.models.location import Location
 from app.repositories.base import BaseRepository
@@ -519,21 +521,53 @@ class ReplaceStaffRequest(BaseModel):
     notes: Optional[str] = None
 
 
-@router.post("/{assignment_id}/replace-staff", summary="Replace staff on an assignment with handover")
-async def replace_assignment_staff(
+class BatchReplaceItem(BaseModel):
+    assignment_id: str
+    new_employee_id: str
+    effective_date: dt.date
+    reason: Optional[str] = None
+    customer_daily_rate: Optional[int] = None
+    employee_daily_rate: Optional[int] = None
+    notes: Optional[str] = None
+
+
+class BatchReplaceRequest(BaseModel):
+    replacements: list[BatchReplaceItem]
+
+
+class MultiStaffItem(BaseModel):
+    employee_id: str
+    shift: ShiftType = ShiftType.FULL_24H
+    start_time: Optional[str] = None
+    end_time: Optional[str] = None
+    customer_daily_rate: Optional[int] = None
+    employee_daily_rate: Optional[int] = None
+    notes: Optional[str] = None
+
+
+class MultiStaffAssignmentRequest(BaseModel):
+    customer_id: str
+    location_id: Optional[str] = None
+    place_type: AssignmentPlace = AssignmentPlace.HOME
+    place_name: Optional[str] = None
+    address: Optional[str] = None
+    dest_lat: Optional[float] = None
+    dest_lng: Optional[float] = None
+    start_date: dt.date
+    end_date: Optional[dt.date] = None
+    duration_days: Optional[int] = None
+    customer_daily_rate: Optional[int] = None
+    employee_daily_rate: Optional[int] = None
+    payment_type: Optional[str] = "prepaid"
+    notes: Optional[str] = None
+    staff_list: list[MultiStaffItem]
+
+
+async def _perform_staff_replacement(
     assignment_id: str,
     payload: ReplaceStaffRequest,
-    actor: ActorContext = Depends(require_permission("assignments", "update")),
-) -> dict:
-    """Replace an assigned nurse/attendant with a substitute nurse starting from effective_date.
-
-    - The previous staff's assignment is shortened to end the day before effective_date
-      (or cancelled if replaced on day 1), and their status is freed back to AVAILABLE.
-    - A new assignment is created for the substitute staff from effective_date to original end_date.
-    - Rate, shift, address, and customer details are transferred.
-    - Push and portal notifications are dispatched to the new staff.
-    - If linked to a booking, the booking's assigned staff is updated.
-    """
+    actor: ActorContext,
+) -> tuple[Assignment, Assignment]:
     existing = await _assignments.get_or_404(assignment_id)
     ensure_can_access(actor, existing.location_id)
 
@@ -678,15 +712,140 @@ async def replace_assignment_staff(
     except Exception as err:
         logger.warning("Could not sync booking staff on replacement: %s", err)
 
+    return existing, new_assignment
+
+
+@router.post("/batch-replace", summary="Replace multiple staff members simultaneously")
+async def batch_replace_staff(
+    payload: BatchReplaceRequest,
+    actor: ActorContext = Depends(require_permission("assignments", "update")),
+) -> dict:
+    if not payload.replacements:
+        raise BadRequestException("No replacements provided")
+
+    results = []
+    for item in payload.replacements:
+        req = ReplaceStaffRequest(
+            new_employee_id=item.new_employee_id,
+            effective_date=item.effective_date,
+            reason=item.reason,
+            customer_daily_rate=item.customer_daily_rate,
+            employee_daily_rate=item.employee_daily_rate,
+            notes=item.notes,
+        )
+        existing, new_asg = await _perform_staff_replacement(item.assignment_id, req, actor)
+        results.append({
+            "previous_assignment": AssignmentResponse.model_validate(existing).model_dump(mode="json"),
+            "new_assignment": AssignmentResponse.model_validate(new_asg).model_dump(mode="json"),
+        })
+
+    from app.services.dashboard_service import invalidate_dashboard_cache
+    invalidate_dashboard_cache()
+
+    return success_response(
+        data={"items": results, "count": len(results)},
+        message=f"Successfully replaced {len(results)} staff members",
+    )
+
+
+@router.post("/multi-assign", summary="Assign multiple nurses/staff to a customer simultaneously")
+async def multi_staff_assign(
+    payload: MultiStaffAssignmentRequest,
+    actor: ActorContext = Depends(require_permission("assignments", "create")),
+) -> dict:
+    if not payload.staff_list:
+        raise BadRequestException("Please select at least one staff member")
+
+    customer = await _customers.get(payload.customer_id)
+    if not customer:
+        raise BadRequestException("Customer not found")
+    loc_id = payload.location_id or customer.location_id
+    ensure_can_access(actor, loc_id)
+
+    calculated_end_date = payload.end_date
+    if not calculated_end_date and payload.duration_days:
+        calculated_end_date = payload.start_date + dt.timedelta(days=payload.duration_days - 1)
+
+    created_assignments = []
+    for staff in payload.staff_list:
+        emp = await _employees.get(staff.employee_id)
+        if not emp:
+            raise BadRequestException(f"Employee {staff.employee_id} not found")
+
+        cdr = staff.customer_daily_rate if staff.customer_daily_rate is not None else payload.customer_daily_rate
+        edr = staff.employee_daily_rate if staff.employee_daily_rate is not None else (payload.employee_daily_rate or emp.daily_rate)
+
+        asg_data = {
+            "customer_id": str(customer.id),
+            "customer_name": customer.name,
+            "employee_id": str(emp.id),
+            "employee_name": emp.name,
+            "location_id": loc_id,
+            "place_type": payload.place_type,
+            "place_name": payload.place_name or "",
+            "address": payload.address or customer.address or "",
+            "dest_lat": payload.dest_lat or customer.lat,
+            "dest_lng": payload.dest_lng or customer.lng,
+            "shift": staff.shift,
+            "start_time": staff.start_time,
+            "end_time": staff.end_time,
+            "start_date": payload.start_date,
+            "end_date": calculated_end_date,
+            "customer_daily_rate": cdr,
+            "employee_daily_rate": edr,
+            "status": AssignmentStatus.SCHEDULED,
+            "acceptance_status": AcceptanceStatus.PENDING,
+            "payment_type": payload.payment_type or "prepaid",
+            "payment_status": PaymentStatus.PENDING,
+            "notes": staff.notes or payload.notes,
+        }
+        _derive_amounts(asg_data, payload.start_date, calculated_end_date)
+        asg = await _assignments.create(asg_data, actor)
+        await _set_employee_status(str(emp.id), EmployeeStatus.ASSIGNED)
+        created_assignments.append(asg)
+
+        # Dispatch alert
+        async def _alert(target_emp=emp, target_asg=asg):
+            try:
+                await notification_service.create(
+                    title="New Duty Assignment",
+                    message=f"You are assigned to {customer.name} ({target_asg.shift} shift) from {target_asg.start_date.isoformat()}.",
+                    type=NotificationType.ASSIGNMENT,
+                    employee_id=str(target_emp.id),
+                    reference_id=str(target_asg.id),
+                )
+            except Exception as e:
+                logger.warning("Push alert note: %s", e)
+
+        asyncio.create_task(_alert())
+
     from app.services.dashboard_service import invalidate_dashboard_cache
     invalidate_dashboard_cache()
 
     return success_response(
         data={
+            "items": [AssignmentResponse.model_validate(a).model_dump(mode="json") for a in created_assignments],
+            "count": len(created_assignments),
+        },
+        message=f"Successfully assigned {len(created_assignments)} staff members to {customer.name}",
+    )
+
+
+@router.post("/{assignment_id}/replace-staff", summary="Replace staff on an assignment with handover")
+async def replace_assignment_staff(
+    assignment_id: str,
+    payload: ReplaceStaffRequest,
+    actor: ActorContext = Depends(require_permission("assignments", "update")),
+) -> dict:
+    existing, new_assignment = await _perform_staff_replacement(assignment_id, payload, actor)
+    from app.services.dashboard_service import invalidate_dashboard_cache
+    invalidate_dashboard_cache()
+    return success_response(
+        data={
             "previous_assignment": AssignmentResponse.model_validate(existing).model_dump(mode="json"),
             "new_assignment": AssignmentResponse.model_validate(new_assignment).model_dump(mode="json"),
         },
-        message=f"Successfully replaced {existing.employee_name} with {new_emp.name} from {payload.effective_date.isoformat()}",
+        message=f"Successfully replaced {existing.employee_name} with {new_assignment.employee_name} from {payload.effective_date.isoformat()}",
     )
 
 
