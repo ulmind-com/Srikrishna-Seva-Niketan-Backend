@@ -30,7 +30,7 @@ class PaginationParams(BaseModel):
 
 def pagination_params(
     page: int = Query(1, ge=1, description="1-based page number"),
-    page_size: int = Query(10, ge=1, le=100, description="Items per page (max 100)"),
+    page_size: int = Query(10, ge=1, le=500, description="Items per page (max 500)"),
     search: Optional[str] = Query(None, description="Free-text search term"),
     sort_by: Optional[str] = Query(None, description="Field name to sort by"),
     sort_order: str = Query("desc", pattern="^(asc|desc)$", description="asc | desc"),

@@ -285,5 +285,34 @@ async def test_replace_staff_with_shift_timing_and_dates(client: AsyncClient, au
     assert new_asg["is_replacement"] is True
     assert new_asg["replacement_for_employee_name"] == "Nurse Original"
 
+    # Replace with custom shift windows (e.g. morning 6am-6pm + evening 8pm-2am)
+    emp_window = Employee(name="Nurse MultiWindow", phone="9000000003", code="NMW03", category="nurse", location_id=loc_id, is_active=True)
+    await emp_window.insert()
+
+    rep_res_windows = await client.post(
+        f"/api/v1/assignments/{new_asg['id']}/replace-staff",
+        json={
+            "new_employee_id": str(emp_window.id),
+            "effective_date": "2026-11-20",
+            "end_date": "2026-11-30",
+            "shift": "custom",
+            "shift_windows": [
+                {"start": "06:00", "end": "18:00"},
+                {"start": "20:00", "end": "02:00"},
+            ],
+            "reason": "Custom multi-window duty hours",
+        },
+        headers=headers,
+    )
+    assert rep_res_windows.status_code == 200, rep_res_windows.text
+    new_asg_win = rep_res_windows.json()["data"]["new_assignment"]
+    assert new_asg_win["shift"] == "custom"
+    assert new_asg_win["start_time"] == "06:00"
+    assert new_asg_win["end_time"] == "02:00"
+    assert len(new_asg_win["shift_windows"]) == 2
+    assert new_asg_win["shift_windows"][0]["start"] == "06:00"
+    assert new_asg_win["shift_windows"][1]["end"] == "02:00"
+
+
 
 

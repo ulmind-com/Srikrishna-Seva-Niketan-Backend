@@ -16,7 +16,7 @@ from app.core.pagination import PaginationParams, pagination_params
 from app.core.responses import success_response
 from app.dependencies.auth import ActorContext, require_permission
 from app.dependencies.scoping import ensure_can_access
-from app.models.assignment import Assignment
+from app.models.assignment import Assignment, ShiftWindow
 from app.models.customer import Customer
 from app.models.employee import Employee
 from app.models.enums import (
@@ -519,6 +519,7 @@ class ReplaceStaffRequest(BaseModel):
     shift: Optional[ShiftType] = None
     start_time: Optional[str] = None
     end_time: Optional[str] = None
+    shift_windows: Optional[list[ShiftWindow]] = None
     reason: Optional[str] = None
     customer_daily_rate: Optional[int] = None
     employee_daily_rate: Optional[int] = None
@@ -533,6 +534,7 @@ class BatchReplaceItem(BaseModel):
     shift: Optional[ShiftType] = None
     start_time: Optional[str] = None
     end_time: Optional[str] = None
+    shift_windows: Optional[list[ShiftWindow]] = None
     reason: Optional[str] = None
     customer_daily_rate: Optional[int] = None
     employee_daily_rate: Optional[int] = None
@@ -645,6 +647,15 @@ async def _perform_staff_replacement(
     target_start_time = payload.start_time if payload.start_time is not None else existing.start_time
     target_end_time = payload.end_time if payload.end_time is not None else existing.end_time
     target_end_date = payload.end_date if payload.end_date is not None else orig_end_date
+    target_windows = None
+    if payload.shift_windows is not None:
+        target_windows = [w.model_dump() for w in payload.shift_windows if w.start or w.end]
+        if target_windows:
+            target_shift = ShiftType.CUSTOM
+            target_start_time = target_windows[0].get("start") or target_start_time
+            target_end_time = target_windows[-1].get("end") or target_end_time
+        else:
+            target_windows = None
 
     new_data: dict = {
         "customer_id": existing.customer_id,
@@ -660,7 +671,7 @@ async def _perform_staff_replacement(
         "shift": target_shift,
         "start_time": target_start_time,
         "end_time": target_end_time,
-        "shift_windows": [w.model_dump() for w in existing.shift_windows] if existing.shift_windows else None,
+        "shift_windows": target_windows if target_windows is not None else ([w.model_dump() for w in existing.shift_windows] if existing.shift_windows else None),
         "start_date": payload.effective_date,
         "end_date": target_end_date,
         "customer_daily_rate": cdr,
@@ -684,7 +695,11 @@ async def _perform_staff_replacement(
     # 3. Dispatches and alerts to new staff member and relieved staff member
     async def _dispatch_replacement_alerts():
         shift_str = target_shift.value if hasattr(target_shift, "value") else str(target_shift)
-        timing_str = f" ({target_start_time} - {target_end_time})" if (target_start_time and target_end_time) else ""
+        if target_windows:
+            win_str = ", ".join(f"{w.get('start', '?')} - {w.get('end', '?')}" for w in target_windows)
+            timing_str = f" (Custom Windows: {win_str})"
+        else:
+            timing_str = f" ({target_start_time} - {target_end_time})" if (target_start_time and target_end_time) else ""
         date_str = f"from {new_assignment.start_date.isoformat()}" + (f" to {target_end_date.isoformat()}" if target_end_date else " (Ongoing)")
 
         # 1. Alert to the new replacement nurse
@@ -764,6 +779,7 @@ async def batch_replace_staff(
             shift=item.shift,
             start_time=item.start_time,
             end_time=item.end_time,
+            shift_windows=item.shift_windows,
             reason=item.reason,
             customer_daily_rate=item.customer_daily_rate,
             employee_daily_rate=item.employee_daily_rate,
