@@ -558,6 +558,10 @@ async def replace_assignment_staff(
     # 1. Update previous staff's assignment
     if payload.effective_date == existing.start_date:
         existing.status = AssignmentStatus.CANCELLED
+        existing.replaced_by_employee_id = str(new_emp.id)
+        existing.replaced_by_employee_name = new_emp.name
+        existing.replacement_reason = payload.reason
+        existing.days_worked = 0
         note_suffix = f"Replaced by {new_emp.name} before starting. Reason: {payload.reason or 'Not specified'}"
         existing.notes = f"{existing.notes} | {note_suffix}" if existing.notes else note_suffix
         existing.touch()
@@ -566,6 +570,10 @@ async def replace_assignment_staff(
     else:
         old_end_date = payload.effective_date - dt.timedelta(days=1)
         existing.end_date = old_end_date
+        existing.replaced_by_employee_id = str(new_emp.id)
+        existing.replaced_by_employee_name = new_emp.name
+        existing.replacement_reason = payload.reason
+        existing.days_worked = max(0, (old_end_date - existing.start_date).days + 1)
         totals_dict = _derive_amounts(
             {"customer_daily_rate": existing.customer_daily_rate, "employee_daily_rate": existing.employee_daily_rate},
             existing.start_date,
@@ -614,6 +622,10 @@ async def replace_assignment_staff(
         "acceptance_status": AcceptanceStatus.PENDING,
         "payment_type": existing.payment_type,
         "payment_status": PaymentStatus.PENDING,
+        "is_replacement": True,
+        "replacement_for_employee_id": existing.employee_id,
+        "replacement_for_employee_name": existing.employee_name,
+        "replacement_reason": payload.reason,
         "notes": f"Replacement for {existing.employee_name}. Reason: {payload.reason or 'Emergency/Leave'}"
         + (f" | {payload.notes}" if payload.notes else ""),
     }

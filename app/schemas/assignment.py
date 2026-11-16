@@ -233,6 +233,13 @@ class AssignmentResponse(IdTimestampSchema):
     employee_payout: Optional[int] = None
     other_expense: Optional[int] = None
     bill_no: Optional[int] = None
+    is_replacement: bool = False
+    replacement_for_employee_id: Optional[str] = None
+    replacement_for_employee_name: Optional[str] = None
+    replaced_by_employee_id: Optional[str] = None
+    replaced_by_employee_name: Optional[str] = None
+    replacement_reason: Optional[str] = None
+    days_worked: Optional[int] = None
     notes: Optional[str] = None
 
     @computed_field  # type: ignore[prop-decorator]

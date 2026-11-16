@@ -89,6 +89,15 @@ class Assignment(TimestampedDocument):
     payment_received_by: Optional[str] = None
     work_completed_at: Optional[dt.datetime] = None
 
+    # Staff replacement / duty handover tracking:
+    is_replacement: bool = False
+    replacement_for_employee_id: Optional[str] = None
+    replacement_for_employee_name: Optional[str] = None
+    replaced_by_employee_id: Optional[str] = None
+    replaced_by_employee_name: Optional[str] = None
+    replacement_reason: Optional[str] = None
+    days_worked: Optional[int] = None
+
     notes: Optional[str] = None
 
     class Settings:
