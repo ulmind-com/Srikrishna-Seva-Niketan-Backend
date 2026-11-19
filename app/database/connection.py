@@ -57,6 +57,26 @@ async def init_database() -> None:
         logger.info("Dropped legacy attendance index uniq_employee_day")
     except Exception:
         pass
+
+    # Drop legacy employee email unique index so it can be recreated with
+    # partialFilterExpression (preventing duplicate null key collisions).
+    try:
+        await _database["employees"].drop_index("uniq_employee_email")
+        logger.info("Dropped legacy employees index uniq_employee_email")
+    except Exception:
+        pass
+
+    # Ensure default location id is known immediately on startup
+    try:
+        ho = await _database["locations"].find_one({"code": "SSN-HO-0001"})
+        if not ho:
+            ho = await _database["locations"].find_one({})
+        if ho:
+            from app.dependencies.scoping import set_default_location_id
+            set_default_location_id(str(ho["_id"]))
+            logger.info("Default location id configured: %s", ho["_id"])
+    except Exception as exc:
+        logger.warning("Default location note on startup: %s", exc)
     logger.info(
         "Beanie initialised (fast startup)", extra={"models": len(ALL_DOCUMENT_MODELS)}
     )

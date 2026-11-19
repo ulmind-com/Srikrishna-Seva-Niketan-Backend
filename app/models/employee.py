@@ -8,11 +8,11 @@ used for assignments, ID cards, billing and reports.
 from __future__ import annotations
 
 import datetime as dt
-from typing import Optional
+from typing import Any, Optional
 
 import pymongo
 from beanie import Indexed
-from pydantic import EmailStr, Field
+from pydantic import EmailStr, Field, field_validator
 
 from app.models.base import ImageAsset, TimestampedDocument
 from app.models.enums import EmployeeStatus, Gender, StaffVerificationStatus
@@ -99,6 +99,55 @@ class Employee(TimestampedDocument):
     rejection_reason: Optional[str] = None
     document_verification: Optional[dict] = None
 
+    @field_validator("email", mode="before")
+    @classmethod
+    def clean_email(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            v = v.strip().lower()
+            return v if v else None
+        return v
+
+    @field_validator("gender", mode="before")
+    @classmethod
+    def clean_gender(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            v = v.strip().lower()
+            return v if v else None
+        return v
+
+    @field_validator(
+        "alt_phone",
+        "address",
+        "city",
+        "pincode",
+        "experience",
+        "id_proof_type",
+        "id_proof_number",
+        "notes",
+        mode="before",
+    )
+    @classmethod
+    def empty_str_to_none(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            v = v.strip()
+            return v if v else None
+        return v
+
+    @field_validator("daily_rate", mode="before")
+    @classmethod
+    def clean_daily_rate(cls, v: Any) -> Any:
+        if v is None or v == "":
+            return None
+        if isinstance(v, (int, float)):
+            import math
+            if math.isnan(v):
+                return None
+            return int(v)
+        if isinstance(v, str):
+            v = v.strip()
+            return int(v) if v else None
+        return v
+
     class Settings:
         name = "employees"
         indexes = [
@@ -114,5 +163,6 @@ class Employee(TimestampedDocument):
                 name="uniq_employee_email",
                 unique=True,
                 sparse=True,
+                partialFilterExpression={"email": {"$type": "string", "$gt": ""}},
             ),
         ]

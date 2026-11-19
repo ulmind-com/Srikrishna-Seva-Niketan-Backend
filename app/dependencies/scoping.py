@@ -30,6 +30,7 @@ def resolve_create_location(actor: ActorContext, location_id: Optional[str]) -> 
     - Unscoped users (super-admin / head-office): defaults to the primary branch
       (Head Office) when omitted instead of failing with 400.
     """
+    location_id = (location_id or "").strip() or None
     if actor.is_scoped:
         if location_id:
             if not actor.can_access_location(location_id):

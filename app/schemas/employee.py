@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import datetime as dt
-from typing import Optional
+from typing import Any, Optional
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
 from app.models.base import ImageAsset
 from app.models.enums import EmployeeStatus, Gender, StaffVerificationStatus
@@ -34,6 +34,72 @@ class EmployeeCreate(BaseModel):
     join_date: Optional[dt.date] = None
     notes: Optional[str] = Field(None, max_length=2000)
     is_active: bool = True
+    email: Optional[EmailStr] = None
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def clean_email(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            v = v.strip().lower()
+            return v if v else None
+        return v
+
+    @field_validator(
+        "alt_phone",
+        "address",
+        "city",
+        "pincode",
+        "experience",
+        "id_proof_type",
+        "id_proof_number",
+        "location_id",
+        "notes",
+        mode="before",
+    )
+    @classmethod
+    def empty_str_to_none(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            v = v.strip()
+            return v if v else None
+        return v
+
+    @field_validator("gender", mode="before")
+    @classmethod
+    def clean_gender(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            v = v.strip().lower()
+            return v if v else None
+        return v
+
+    @field_validator("join_date", mode="before")
+    @classmethod
+    def clean_join_date(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            v = v.strip()
+            return v if v else None
+        return v
+
+    @field_validator("daily_rate", mode="before")
+    @classmethod
+    def clean_daily_rate(cls, v: Any) -> Any:
+        if v is None or v == "":
+            return None
+        if isinstance(v, (int, float)):
+            import math
+            if math.isnan(v):
+                return None
+            return int(v)
+        if isinstance(v, str):
+            v = v.strip()
+            return int(v) if v else None
+        return v
+
+    @field_validator("rating", mode="before")
+    @classmethod
+    def clean_rating(cls, v: Any) -> Any:
+        if v is None or v == "":
+            return 5.0
+        return float(v)
 
 
 class EmployeeUpdate(BaseModel):
@@ -58,6 +124,72 @@ class EmployeeUpdate(BaseModel):
     join_date: Optional[dt.date] = None
     notes: Optional[str] = Field(None, max_length=2000)
     is_active: Optional[bool] = None
+    email: Optional[EmailStr] = None
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def clean_email(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            v = v.strip().lower()
+            return v if v else None
+        return v
+
+    @field_validator(
+        "alt_phone",
+        "address",
+        "city",
+        "pincode",
+        "experience",
+        "id_proof_type",
+        "id_proof_number",
+        "location_id",
+        "notes",
+        mode="before",
+    )
+    @classmethod
+    def empty_str_to_none(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            v = v.strip()
+            return v if v else None
+        return v
+
+    @field_validator("gender", mode="before")
+    @classmethod
+    def clean_gender(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            v = v.strip().lower()
+            return v if v else None
+        return v
+
+    @field_validator("join_date", mode="before")
+    @classmethod
+    def clean_join_date(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            v = v.strip()
+            return v if v else None
+        return v
+
+    @field_validator("daily_rate", mode="before")
+    @classmethod
+    def clean_daily_rate(cls, v: Any) -> Any:
+        if v is None or v == "":
+            return None
+        if isinstance(v, (int, float)):
+            import math
+            if math.isnan(v):
+                return None
+            return int(v)
+        if isinstance(v, str):
+            v = v.strip()
+            return int(v) if v else None
+        return v
+
+    @field_validator("rating", mode="before")
+    @classmethod
+    def clean_rating(cls, v: Any) -> Any:
+        if v is None or v == "":
+            return None
+        return float(v)
 
 
 class EmployeeResponse(IdTimestampSchema):

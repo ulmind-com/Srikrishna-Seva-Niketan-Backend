@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from pymongo.errors import DuplicateKeyError
 from slowapi.errors import RateLimitExceeded
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -86,6 +87,24 @@ def register_exception_handlers(app: FastAPI) -> None:
                 content=error_response(
                     message="Too many requests, please slow down",
                     errors={"limit": str(exc.limit.limit)},
+                ),
+            ),
+        )
+
+    @app.exception_handler(DuplicateKeyError)
+    async def _duplicate_key_handler(
+        request: Request, exc: DuplicateKeyError
+    ) -> JSONResponse:
+        logger.warning(
+            "Duplicate key error",
+            extra={"path": request.url.path, "detail": str(exc)},
+        )
+        return _with_cors(
+            request,
+            JSONResponse(
+                status_code=409,
+                content=error_response(
+                    message="A record with this unique identifier (e.g. email or code) already exists."
                 ),
             ),
         )
