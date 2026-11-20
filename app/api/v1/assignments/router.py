@@ -645,6 +645,9 @@ async def _perform_staff_replacement(
         if "employee_payout" in totals_dict:
             existing.employee_payout = totals_dict["employee_payout"]
 
+        if payload.start_time:
+            existing.end_time = payload.start_time
+
         if old_end_date <= today:
             existing.status = AssignmentStatus.COMPLETED
             await _set_employee_status(existing.employee_id, EmployeeStatus.AVAILABLE)
