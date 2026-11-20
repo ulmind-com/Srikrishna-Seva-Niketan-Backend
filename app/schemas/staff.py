@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.models.base import ImageAsset
 from app.schemas.common import IdTimestampSchema
@@ -28,6 +28,43 @@ class StaffCreate(BaseModel):
     is_active: bool = True
     order: int = 0
 
+    @field_validator("price_7_days", "price_15_days", "price_30_days", mode="before")
+    @classmethod
+    def clean_price(cls, v: Any) -> Any:
+        if v is None or v == "":
+            return None
+        if isinstance(v, (int, float)):
+            import math
+            if math.isnan(v):
+                return None
+            return int(v)
+        if isinstance(v, str):
+            v = v.strip()
+            return int(v) if v else None
+        return v
+
+    @field_validator("rating", mode="before")
+    @classmethod
+    def clean_rating(cls, v: Any) -> Any:
+        if v is None or v == "":
+            return 5.0
+        return float(v)
+
+    @field_validator("order", mode="before")
+    @classmethod
+    def clean_order(cls, v: Any) -> Any:
+        if v is None or v == "":
+            return 0
+        return int(v)
+
+    @field_validator("experience", "bio", mode="before")
+    @classmethod
+    def clean_strings(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            v = v.strip()
+            return v if v else None
+        return v
+
 
 class StaffUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=2, max_length=120)
@@ -43,6 +80,43 @@ class StaffUpdate(BaseModel):
     is_featured: Optional[bool] = None
     is_active: Optional[bool] = None
     order: Optional[int] = None
+
+    @field_validator("price_7_days", "price_15_days", "price_30_days", mode="before")
+    @classmethod
+    def clean_price(cls, v: Any) -> Any:
+        if v is None or v == "":
+            return None
+        if isinstance(v, (int, float)):
+            import math
+            if math.isnan(v):
+                return None
+            return int(v)
+        if isinstance(v, str):
+            v = v.strip()
+            return int(v) if v else None
+        return v
+
+    @field_validator("rating", mode="before")
+    @classmethod
+    def clean_rating(cls, v: Any) -> Any:
+        if v is None or v == "":
+            return None
+        return float(v)
+
+    @field_validator("order", mode="before")
+    @classmethod
+    def clean_order(cls, v: Any) -> Any:
+        if v is None or v == "":
+            return None
+        return int(v)
+
+    @field_validator("experience", "bio", mode="before")
+    @classmethod
+    def clean_strings(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            v = v.strip()
+            return v if v else None
+        return v
 
 
 class StaffResponse(IdTimestampSchema):

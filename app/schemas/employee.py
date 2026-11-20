@@ -27,6 +27,13 @@ class EmployeeCreate(BaseModel):
     id_proof: Optional[ImageAsset] = None
     id_proof_type: Optional[str] = Field(None, max_length=40)
     id_proof_number: Optional[str] = Field(None, max_length=40)
+    voter_number: Optional[str] = Field(None, max_length=40)
+    voter_photo: Optional[ImageAsset] = None
+    pan_number: Optional[str] = Field(None, max_length=40)
+    pan_photo: Optional[ImageAsset] = None
+    bank_account_number: Optional[str] = Field(None, max_length=40)
+    bank_ifsc: Optional[str] = Field(None, max_length=20)
+    bank_photo: Optional[ImageAsset] = None
     location_id: Optional[str] = None  # required for unscoped users; defaulted for managers
     status: EmployeeStatus = EmployeeStatus.AVAILABLE
     rating: float = Field(5.0, ge=1.0, le=5.0)
@@ -52,6 +59,10 @@ class EmployeeCreate(BaseModel):
         "experience",
         "id_proof_type",
         "id_proof_number",
+        "voter_number",
+        "pan_number",
+        "bank_account_number",
+        "bank_ifsc",
         "location_id",
         "notes",
         mode="before",
@@ -117,6 +128,13 @@ class EmployeeUpdate(BaseModel):
     id_proof: Optional[ImageAsset] = None
     id_proof_type: Optional[str] = Field(None, max_length=40)
     id_proof_number: Optional[str] = Field(None, max_length=40)
+    voter_number: Optional[str] = Field(None, max_length=40)
+    voter_photo: Optional[ImageAsset] = None
+    pan_number: Optional[str] = Field(None, max_length=40)
+    pan_photo: Optional[ImageAsset] = None
+    bank_account_number: Optional[str] = Field(None, max_length=40)
+    bank_ifsc: Optional[str] = Field(None, max_length=20)
+    bank_photo: Optional[ImageAsset] = None
     location_id: Optional[str] = None
     status: Optional[EmployeeStatus] = None
     rating: Optional[float] = Field(None, ge=1.0, le=5.0)
@@ -142,6 +160,10 @@ class EmployeeUpdate(BaseModel):
         "experience",
         "id_proof_type",
         "id_proof_number",
+        "voter_number",
+        "pan_number",
+        "bank_account_number",
+        "bank_ifsc",
         "location_id",
         "notes",
         mode="before",
@@ -208,6 +230,13 @@ class EmployeeResponse(IdTimestampSchema):
     id_proof: Optional[ImageAsset] = None
     id_proof_type: Optional[str] = None
     id_proof_number: Optional[str] = None
+    voter_number: Optional[str] = None
+    voter_photo: Optional[ImageAsset] = None
+    pan_number: Optional[str] = None
+    pan_photo: Optional[ImageAsset] = None
+    bank_account_number: Optional[str] = None
+    bank_ifsc: Optional[str] = None
+    bank_photo: Optional[ImageAsset] = None
     location_id: str
     status: EmployeeStatus
     rating: float
@@ -226,5 +255,6 @@ class EmployeeResponse(IdTimestampSchema):
     verification_status: StaffVerificationStatus = StaffVerificationStatus.DRAFT
     submitted_at: Optional[dt.datetime] = None
     verified_at: Optional[dt.datetime] = None
+    verified_by: Optional[str] = None
     rejection_reason: Optional[str] = None
     document_verification: Optional[dict] = None

@@ -123,6 +123,10 @@ class Employee(TimestampedDocument):
         "experience",
         "id_proof_type",
         "id_proof_number",
+        "voter_number",
+        "pan_number",
+        "bank_account_number",
+        "bank_ifsc",
         "notes",
         mode="before",
     )

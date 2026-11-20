@@ -104,3 +104,51 @@ async def test_create_employee_duplicate_email_handled(client, auth_headers):
     r2 = await client.post("/api/v1/employees", json=p2, headers=auth_headers)
     assert r2.status_code == 409
     assert r2.json()["success"] is False
+
+
+@pytest.mark.asyncio
+async def test_employee_kyc_fields_returned(client, auth_headers):
+    loc = await Location.find_one({})
+    assert loc is not None
+
+    payload = {
+        "name": "Nurse KYC Check",
+        "phone": "9876500004",
+        "location_id": str(loc.id),
+        "id_proof_type": "Aadhaar",
+        "id_proof_number": "1234-5678-9012",
+        "voter_number": "VTR9876543",
+        "pan_number": "ABCDE1234F",
+        "bank_account_number": "9182736450",
+        "bank_ifsc": "SBIN0001234",
+    }
+    resp = await client.post("/api/v1/employees", json=payload, headers=auth_headers)
+    assert resp.status_code == 201
+    data = resp.json()["data"]
+    assert data["voter_number"] == "VTR9876543"
+    assert data["pan_number"] == "ABCDE1234F"
+    assert data["bank_account_number"] == "9182736450"
+    assert data["bank_ifsc"] == "SBIN0001234"
+
+
+@pytest.mark.asyncio
+async def test_staff_create_with_empty_strings(client, auth_headers):
+    payload = {
+        "name": "Attendant Ram",
+        "category": "Health Attendant",
+        "service_label": "24h attendant",
+        "rating": "4.5",
+        "price_7_days": "",
+        "price_15_days": "",
+        "price_30_days": "",
+        "order": "",
+        "experience": "",
+        "bio": "",
+    }
+    resp = await client.post("/api/v1/staff", json=payload, headers=auth_headers)
+    assert resp.status_code == 201
+    data = resp.json()["data"]
+    assert data["name"] == "Attendant Ram"
+    assert data["rating"] == 4.5
+    assert data["price_7_days"] is None
+    assert data["order"] == 0
