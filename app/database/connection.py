@@ -68,13 +68,15 @@ async def init_database() -> None:
 
     # Ensure default location id is known immediately on startup
     try:
-        ho = await _database["locations"].find_one({"code": "SSN-HO-0001"})
+        ho = await _database["locations"].find_one({"code": "SSN-HO-0001", "is_active": True})
+        if not ho:
+            ho = await _database["locations"].find_one({"is_active": True})
         if not ho:
             ho = await _database["locations"].find_one({})
         if ho:
             from app.dependencies.scoping import set_default_location_id
             set_default_location_id(str(ho["_id"]))
-            logger.info("Default location id configured: %s", ho["_id"])
+            logger.info("Default location id configured: %s (%s)", ho.get("name"), ho["_id"])
     except Exception as exc:
         logger.warning("Default location note on startup: %s", exc)
     logger.info(

@@ -84,8 +84,46 @@ async def seed_admin() -> None:
 
 
 async def seed_locations() -> None:
-    """Ensure standard Kolkata branches exist."""
+    """Ensure initial branches exist only on a fresh installation. Never resurrect deleted branches."""
     from app.dependencies.scoping import set_default_location_id
+
+    db = None
+    try:
+        from app.database.connection import get_database
+        db = get_database()
+    except Exception:
+        try:
+            db = Location.get_motor_collection().database
+        except Exception:
+            db = None
+
+    bootstrap = None
+    if db is not None:
+        try:
+            bootstrap = await db["system_meta"].find_one({"_id": "locations_bootstrapped"})
+        except Exception:
+            pass
+
+    if bootstrap:
+        primary = await Location.find_one({"is_active": True}) or await Location.find_one({})
+        if primary:
+            set_default_location_id(str(primary.id))
+        return
+
+    any_loc = await Location.find_one({})
+    if any_loc is not None:
+        if db is not None:
+            try:
+                await db["system_meta"].update_one(
+                    {"_id": "locations_bootstrapped"},
+                    {"$set": {"bootstrapped": True, "at": dt.datetime.now(dt.timezone.utc)}},
+                    upsert=True,
+                )
+            except Exception:
+                pass
+        primary = await Location.find_one({"is_active": True}) or any_loc
+        set_default_location_id(str(primary.id))
+        return
 
     branches = [
         {"name": "Head Office", "code": "SSN-HO-0001", "city": "Kolkata", "order": 0},
@@ -94,18 +132,26 @@ async def seed_locations() -> None:
         {"name": "Park Street Branch", "code": "SSN-PS-0004", "city": "Park Street", "order": 3},
     ]
     for b in branches:
-        existing = await Location.find_one({"code": b["code"]})
-        if existing is None:
-            existing = await Location(
-                name=b["name"],
-                code=b["code"],
-                city=b["city"],
-                is_active=True,
-                order=b["order"],
-            ).insert()
-            logger.info("Seeded location", extra={"code": b["code"]})
-        if b["code"] == "SSN-HO-0001" and existing:
-            set_default_location_id(str(existing.id))
+        loc = await Location(
+            name=b["name"],
+            code=b["code"],
+            city=b["city"],
+            is_active=True,
+            order=b["order"],
+        ).insert()
+        if b["code"] == "SSN-HO-0001":
+            set_default_location_id(str(loc.id))
+        logger.info("Seeded initial location", extra={"code": b["code"]})
+
+    if db is not None:
+        try:
+            await db["system_meta"].update_one(
+                {"_id": "locations_bootstrapped"},
+                {"$set": {"bootstrapped": True, "at": dt.datetime.now(dt.timezone.utc)}},
+                upsert=True,
+            )
+        except Exception:
+            pass
 
 
 async def seed_employees() -> None:

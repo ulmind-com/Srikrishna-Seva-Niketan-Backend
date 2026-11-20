@@ -22,6 +22,11 @@ def set_default_location_id(loc_id: str) -> None:
     _DEFAULT_LOCATION_ID = loc_id
 
 
+def get_default_location_id() -> Optional[str]:
+    global _DEFAULT_LOCATION_ID
+    return _DEFAULT_LOCATION_ID
+
+
 def resolve_create_location(actor: ActorContext, location_id: Optional[str]) -> str:
     """Validate and normalise the branch for a record being created.
 

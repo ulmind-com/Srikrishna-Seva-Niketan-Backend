@@ -94,6 +94,12 @@ async def create_location(
         data["code"] = await _unique_code(data.get("city") or data.get("name", ""))
     doc = await _locations.create(data, actor)
     _invalidate_caches()
+
+    from app.dependencies.scoping import get_default_location_id, set_default_location_id
+
+    if not get_default_location_id():
+        set_default_location_id(str(doc.id))
+
     return item_response(LocationResponse, doc, "Location created")
 
 
@@ -120,4 +126,39 @@ async def delete_location(
 ) -> dict:
     await _locations.delete(location_id, actor)
     _invalidate_caches()
+
+    from app.dependencies.scoping import get_default_location_id, set_default_location_id
+    from app.models.employee import Employee
+    from app.models.customer import Customer
+    from app.models.assignment import Assignment
+    from app.models.user import User
+
+    # Find next active location if available
+    next_loc = await Location.find_one({"is_active": True}) or await Location.find_one({})
+    next_id = str(next_loc.id) if next_loc else None
+
+    if get_default_location_id() == location_id:
+        set_default_location_id(next_id or "")
+
+    # Reassign any records previously tied to this deleted branch to the next active branch
+    if next_id:
+        await Employee.get_motor_collection().update_many(
+            {"location_id": location_id},
+            {"$set": {"location_id": next_id}},
+        )
+        await Customer.get_motor_collection().update_many(
+            {"location_id": location_id},
+            {"$set": {"location_id": next_id}},
+        )
+        await Assignment.get_motor_collection().update_many(
+            {"location_id": location_id},
+            {"$set": {"location_id": next_id}},
+        )
+
+    # Clean up user scoped location_ids
+    await User.get_motor_collection().update_many(
+        {"location_ids": location_id},
+        {"$pull": {"location_ids": location_id}},
+    )
+
     return success_response(message="Location deleted")
