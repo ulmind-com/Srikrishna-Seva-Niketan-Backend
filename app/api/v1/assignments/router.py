@@ -661,7 +661,7 @@ async def _perform_staff_replacement(
     target_shift = payload.shift or existing.shift
     target_start_time = payload.start_time if payload.start_time is not None else existing.start_time
     target_end_time = payload.end_time if payload.end_time is not None else existing.end_time
-    target_end_date = payload.end_date
+    target_end_date = payload.end_date if "end_date" in payload.model_fields_set else orig_end_date
     target_windows = None
     if payload.shift_windows is not None:
         target_windows = [w.model_dump() for w in payload.shift_windows if w.start or w.end]
@@ -764,7 +764,7 @@ async def _perform_staff_replacement(
         from app.models.booking import Booking, BookingStatus
         booking = await Booking.find_one({
             "customer_id": existing.customer_id,
-            "status": {"$in": [BookingStatus.ASSIGNED, BookingStatus.IN_PROGRESS, BookingStatus.CONFIRMED]},
+            "status": {"$in": [BookingStatus.ASSIGNED, BookingStatus.IN_PROGRESS, BookingStatus.APPROVED]},
         })
         if booking:
             booking.assigned_staff_id = str(new_emp.id)
