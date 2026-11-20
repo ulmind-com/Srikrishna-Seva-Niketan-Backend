@@ -603,10 +603,6 @@ async def _perform_staff_replacement(
         raise BadRequestException(
             f"Replacement date ({payload.effective_date}) cannot be before current start date ({existing.start_date})"
         )
-    if existing.end_date and payload.effective_date > existing.end_date:
-        raise BadRequestException(
-            f"Replacement date ({payload.effective_date}) cannot be after current end date ({existing.end_date})"
-        )
 
     new_emp = await _employees.get(payload.new_employee_id)
     if not new_emp:
@@ -630,7 +626,8 @@ async def _perform_staff_replacement(
         await existing.save()
         await _set_employee_status(existing.employee_id, EmployeeStatus.AVAILABLE)
     else:
-        old_end_date = payload.effective_date - dt.timedelta(days=1)
+        calc_prev_end = payload.effective_date - dt.timedelta(days=1)
+        old_end_date = min(existing.end_date, calc_prev_end) if existing.end_date else calc_prev_end
         existing.end_date = old_end_date
         existing.replaced_by_employee_id = str(new_emp.id)
         existing.replaced_by_employee_name = new_emp.name
@@ -664,7 +661,7 @@ async def _perform_staff_replacement(
     target_shift = payload.shift or existing.shift
     target_start_time = payload.start_time if payload.start_time is not None else existing.start_time
     target_end_time = payload.end_time if payload.end_time is not None else existing.end_time
-    target_end_date = payload.end_date if payload.end_date is not None else orig_end_date
+    target_end_date = payload.end_date
     target_windows = None
     if payload.shift_windows is not None:
         target_windows = [w.model_dump() for w in payload.shift_windows if w.start or w.end]
