@@ -25,6 +25,7 @@ from app.models.enums import (
     AssignmentStatus,
     EmployeeStatus,
     NotificationType,
+    PaymentMode,
     PaymentStatus,
     ShiftType,
 )
@@ -528,6 +529,111 @@ async def issue_bill(
         doc.touch()
         await doc.save()
     return success_response(data={"bill_no": doc.bill_no})
+
+
+class AdminCompleteAssignmentRequest(BaseModel):
+    cash_collected: bool = True
+    cash_amount: Optional[int] = None
+    note: Optional[str] = None
+    received_by: Optional[str] = None
+
+
+@router.post("/{assignment_id}/complete", summary="Super Admin mark duty completed and record cash collection")
+async def admin_complete_assignment(
+    assignment_id: str,
+    payload: AdminCompleteAssignmentRequest = AdminCompleteAssignmentRequest(),
+    actor: ActorContext = Depends(require_permission("assignments", "update")),
+) -> dict:
+    """Super Admin mark an assignment completed and record cash receipt.
+
+    Designed for staff who use keypad phones or cannot use the mobile app.
+    Sets status=COMPLETED, work_completed_at, records cash receipt if postpaid
+    or cash_collected=True, inserts a Payment entry in the finance ledger,
+    frees the staff member, and triggers real-time updates.
+    """
+    existing = await _assignments.get_or_404(assignment_id)
+    ensure_can_access(actor, existing.location_id)
+
+    now = dt.datetime.now(dt.timezone.utc)
+    today = now.date()
+
+    existing.status = AssignmentStatus.COMPLETED
+    existing.acceptance_status = AcceptanceStatus.ACCEPTED
+    existing.work_completed_at = now
+
+    if existing.end_date is None:
+        existing.end_date = today
+        if not existing.end_time:
+            existing.end_time = now.strftime("%H:%M")
+
+    eff_days = max(1, (existing.end_date - existing.start_date).days + 1)
+    existing.days_worked = eff_days
+
+    if existing.customer_rate is None and existing.customer_daily_rate:
+        existing.customer_rate = existing.customer_daily_rate * eff_days
+    if existing.employee_payout is None and existing.employee_daily_rate:
+        existing.employee_payout = existing.employee_daily_rate * eff_days
+
+    ptype = str(getattr(existing, "payment_type", "prepaid"))
+    is_postpaid = (ptype == "postpaid")
+    amount = payload.cash_amount if payload.cash_amount is not None else int(existing.customer_rate or 0)
+    actor_name = actor.user.name if (hasattr(actor, "user") and actor.user and actor.user.name) else "Super Admin"
+    emp_name = existing.employee_name or "Staff"
+
+    if is_postpaid or payload.cash_collected:
+        existing.payment_status = PaymentStatus.PAID
+        existing.payment_received_at = now
+        existing.payment_received_by = payload.received_by or f"Super Admin ({actor_name}) on behalf of {emp_name}"
+        if amount > 0:
+            try:
+                from app.models.finance import Payment
+                pay = Payment(
+                    customer_id=existing.customer_id,
+                    customer_name=existing.customer_name,
+                    assignment_id=str(existing.id),
+                    location_id=existing.location_id,
+                    amount=amount,
+                    mode=PaymentMode.CASH,
+                    status=PaymentStatus.PAID,
+                    date=today,
+                    note=payload.note or f"Cash recorded by {actor_name} for duty by {emp_name} (Patient: {existing.customer_name})",
+                )
+                await pay.insert()
+            except Exception as e:
+                logger.warning("Payment insert error: %s", e)
+
+    if payload.note:
+        suffix = f"Admin update: {payload.note}"
+        existing.notes = f"{existing.notes} | {suffix}" if existing.notes else suffix
+
+    existing.touch()
+    await existing.save()
+
+    # Free staff member
+    await _set_employee_status(existing.employee_id, EmployeeStatus.AVAILABLE)
+
+    # Sync booking status to COMPLETED if linked
+    try:
+        from app.models.booking import Booking, BookingStatus
+        b = await Booking.find_one({"customer_id": existing.customer_id})
+        if b:
+            b.status = BookingStatus.COMPLETED
+            await b.save()
+    except Exception:
+        pass
+
+    from app.services.dashboard_service import invalidate_dashboard_cache
+    invalidate_dashboard_cache()
+
+    await notification_service.create(
+        title="Duty Completed & Settled",
+        message=f"Admin marked duty for {existing.customer_name} ({emp_name}) as completed. Cash ₹{amount} settled.",
+        type=NotificationType.ASSIGNMENT,
+        employee_id=existing.employee_id,
+        reference_id=str(existing.id),
+    )
+
+    return item_response(AssignmentResponse, existing, "Duty marked as completed and cash collection recorded")
 
 
 class ReplaceStaffRequest(BaseModel):
