@@ -194,27 +194,19 @@ async def _assert_branch_exists(location_id: str) -> Location:
 
 @router.get("/branches", summary="List branches for the signup form")
 async def list_branches() -> dict:
-    """Public, unauthenticated branch list used by the registration dropdown.
-
-    Only the fields the signup form needs are exposed — not the full branch
-    record, which stays behind the admin ``locations`` permission.
+    """Public, unauthenticated branch list used by registration & public forms.
+    Returns real-time active branches ordered by order.
     """
-    global _BRANCHES_CACHE
-    now = time.time()
-    if now - _BRANCHES_CACHE[0] < 60.0 and _BRANCHES_CACHE[1]:
-        return success_response(data=_BRANCHES_CACHE[1])
-
     branches = await Location.find({"is_active": True}).sort("order").to_list()
     data = [
         {
             "id": str(b.id),
             "name": b.name,
             "code": b.code,
-            "city": b.city,
+            "city": b.city or "",
         }
         for b in branches
     ]
-    _BRANCHES_CACHE = (now, data)
     return success_response(data=data)
 
 
