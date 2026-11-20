@@ -71,8 +71,9 @@ _SHIFT_LABEL = {
 
 
 def _format_shift(shift, start_time: Optional[str], end_time: Optional[str], windows=None) -> str:
-    """Readable shift: the time window(s) for custom shifts, else the label."""
+    """Readable shift: label + time window(s) when available."""
     s = str(getattr(shift, "value", shift))
+    label = _SHIFT_LABEL.get(s, s.capitalize())
     if s == "custom":
         parts = []
         for w in windows or []:
@@ -83,8 +84,14 @@ def _format_shift(shift, start_time: Optional[str], end_time: Optional[str], win
         if not parts and (start_time or end_time):
             parts.append(f"{_fmt_time(start_time) or '?'} - {_fmt_time(end_time) or '?'}")
         if parts:
-            return ", ".join(parts)
-    return _SHIFT_LABEL.get(s, s)
+            return f"Custom ({', '.join(parts)})"
+        return "Custom"
+
+    if start_time and end_time:
+        return f"{label} ({_fmt_time(start_time)} - {_fmt_time(end_time)})"
+    elif start_time:
+        return f"{label} (from {_fmt_time(start_time)})"
+    return label
 
 
 class AssignmentCreate(BaseModel):

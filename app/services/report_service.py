@@ -546,6 +546,8 @@ async def duty_report(
             "employee_name": a.employee_name,
             "employee_code": emp.code if emp else None,
             "shift": str(a.shift),
+            "start_time": a.start_time,
+            "end_time": a.end_time,
             "shift_label": _format_shift(a.shift, a.start_time, a.end_time, a.shift_windows),
             "shift_windows": [w.model_dump() for w in a.shift_windows] if a.shift_windows else None,
             "place_type": str(a.place_type),
