@@ -88,10 +88,10 @@ async def test_replace_staff_and_consolidated_monthly_bill(
     assert replace_res.status_code == 200, replace_res.text
     rep_data = replace_res.json()["data"]
 
-    # Verify previous assignment was truncated to 2026-10-10
+    # Verify previous assignment ends on replacement effective date (2026-10-11)
     prev_a = rep_data["previous_assignment"]
-    assert prev_a["end_date"] == "2026-10-10"
-    assert prev_a["customer_rate"] == 1200 * 10  # 10 days
+    assert prev_a["end_date"] == "2026-10-11"
+    assert prev_a["customer_rate"] == 1200 * 11  # 11 days (1st to 11th)
 
     # Verify new assignment starts 2026-10-11 and ends 2026-10-30 (20 days)
     new_a = rep_data["new_assignment"]
@@ -118,15 +118,15 @@ async def test_replace_staff_and_consolidated_monthly_bill(
     assert cust_bill["customer_name"] == "Sagnik Mondal"
     assert "Arnab Senapati" in cust_bill["employee_name"]
     assert "Rupa Mondal" in cust_bill["employee_name"]
-    assert cust_bill["total_days"] == 30  # 10 + 20 = 30 days
-    assert cust_bill["total_amount"] == 1200 * 30  # Rs 36,000
+    assert cust_bill["total_days"] == 31  # 11 + 20 = 31 days
+    assert cust_bill["total_amount"] == 1200 * 31  # Rs 37,200
 
     # Line items check:
     assert len(cust_bill["line_items"]) == 2
     li1, li2 = cust_bill["line_items"][0], cust_bill["line_items"][1]
     assert li1["employee_name"] == "Arnab Senapati"
-    assert li1["days"] == 10
-    assert li1["amount"] == 12000
+    assert li1["days"] == 11
+    assert li1["amount"] == 13200
 
     assert li2["employee_name"] == "Rupa Mondal"
     assert li2["days"] == 20

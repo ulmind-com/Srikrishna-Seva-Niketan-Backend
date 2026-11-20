@@ -626,8 +626,7 @@ async def _perform_staff_replacement(
         await existing.save()
         await _set_employee_status(existing.employee_id, EmployeeStatus.AVAILABLE)
     else:
-        calc_prev_end = payload.effective_date - dt.timedelta(days=1)
-        old_end_date = min(existing.end_date, calc_prev_end) if existing.end_date else calc_prev_end
+        old_end_date = min(existing.end_date, payload.effective_date) if existing.end_date else payload.effective_date
         existing.end_date = old_end_date
         existing.replaced_by_employee_id = str(new_emp.id)
         existing.replaced_by_employee_name = new_emp.name
