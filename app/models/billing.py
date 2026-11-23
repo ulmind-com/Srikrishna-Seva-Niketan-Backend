@@ -25,7 +25,7 @@ class MonthlyBill(TimestampedDocument):
     month: str  # "YYYY-MM"
     bill_no: int
     # Snapshot of what was billed when the number was issued (for audit).
-    total_days: Optional[int] = None
+    total_days: Optional[float] = None
     total_amount: Optional[int] = None
 
     class Settings:

@@ -24,7 +24,7 @@ from app.models.billing import MonthlyBill
 from app.models.customer import Customer
 from app.models.employee import Employee
 from app.models.location import Location
-from app.schemas.assignment import _format_shift
+from app.schemas.assignment import _format_shift, calculate_duty_days
 
 router = APIRouter(prefix="/billing", tags=["Billing"])
 
@@ -55,26 +55,38 @@ def _overlap_days(
 
 def _daily_rate(a: Assignment) -> int:
     """Per-day customer charge — explicit daily rate, else derived from the total."""
-    if a.customer_daily_rate is not None:
+    if a.customer_daily_rate is not None and a.customer_daily_rate > 0:
         return a.customer_daily_rate
-    if a.customer_rate and a.end_date:
-        total = (a.end_date - a.start_date).days + 1
-        if total > 0:
-            return round(a.customer_rate / total)
+    if a.customer_rate:
+        duty_days = a.days_worked
+        if not duty_days and a.end_date:
+            duty_days = calculate_duty_days(
+                a.start_date, a.end_date, a.start_time, a.end_time, a.shift, a.duty_breaks
+            )
+        if duty_days and duty_days > 0:
+            return round(a.customer_rate / duty_days)
     return 0
 
 
-async def _compute_month(
-    actor: ActorContext, month: str, location_id: Optional[str]
+async def _compute_bills(
+    actor: ActorContext,
+    start_date: dt.date,
+    end_date: dt.date,
+    location_id: Optional[str] = None,
+    customer_id: Optional[str] = None,
+    month_label: Optional[str] = None,
 ) -> list[dict]:
-    """Group month-overlapping assignments by customer into monthly bills."""
-    m_start, m_end = _month_bounds(month)
-    m_start_dt = dt.datetime.combine(m_start, dt.time.min)
-    m_end_dt = dt.datetime.combine(m_end, dt.time.min)
+    """Group date-range-overlapping assignments by customer into statement bills."""
+    m_start_dt = dt.datetime.combine(start_date, dt.time.min)
+    m_end_dt = dt.datetime.combine(end_date, dt.time.max)
 
     filters: dict = actor.scope_filter()
+    # Only active, scheduled, completed assignments (exclude cancelled)
+    filters["status"] = {"$ne": "cancelled"}
     if location_id and actor.can_access_location(location_id):
         filters["location_id"] = location_id
+    if customer_id:
+        filters["customer_id"] = customer_id
     filters["start_date"] = {"$lte": m_end_dt}
     filters["$or"] = [{"end_date": None}, {"end_date": {"$gte": m_start_dt}}]
 
@@ -101,24 +113,48 @@ async def _compute_month(
         for e in await Employee.find({"_id": {"$in": _oid_set(emp_ids)}}).to_list()
     }
     locations = {str(loc.id): loc for loc in await Location.find({}).to_list()}
-    issued = {mb.key: mb for mb in await MonthlyBill.find({"month": month}).to_list()}
 
-    # Group by customer so one customer receives ONE consolidated monthly bill,
+    period_key = month_label or f"{start_date.isoformat()}_{end_date.isoformat()}"
+    issued = {mb.key: mb for mb in await MonthlyBill.find({}).to_list()}
+
+    # Group by customer so one customer receives ONE consolidated bill,
     # even when duty was split across multiple staff members (e.g. replacement).
     groups: dict[str, dict] = {}
     for a in assignments:
-        days = _overlap_days(a.start_date, a.end_date, m_start, m_end)
+        row_start = max(a.start_date, start_date)
+        row_end = min(a.end_date or end_date, end_date)
+        if row_end < row_start:
+            continue
+
+        if (
+            a.start_date >= start_date
+            and a.end_date
+            and a.end_date <= end_date
+            and a.days_worked is not None
+            and a.days_worked > 0
+        ):
+            days = float(a.days_worked)
+        else:
+            days = calculate_duty_days(
+                row_start, row_end, a.start_time, a.end_time, a.shift, a.duty_breaks
+            )
+
         if days <= 0:
             continue
+
         rate = _daily_rate(a)
-        amount = rate * days
+        if a.days_worked and a.days_worked == days and a.customer_rate:
+            amount = a.customer_rate
+        else:
+            amount = int(round(rate * days))
+
         cust_id = str(a.customer_id)
         g = groups.get(cust_id)
         if g is None:
             cust = customers.get(a.customer_id)
             loc = locations.get(a.location_id)
             g = {
-                "key": f"{a.customer_id}:{month}",
+                "key": f"{a.customer_id}:{period_key}",
                 "customer_id": a.customer_id,
                 "customer_name": cust.name if cust else a.customer_name,
                 "customer_phone": cust.phone if cust else None,
@@ -126,12 +162,17 @@ async def _compute_month(
                 "customer_address": (cust.address if cust else None) or a.address,
                 "location_id": a.location_id,
                 "location_name": loc.name if loc else None,
+                "branch_phone": loc.phone if loc else "9239701265",
+                "branch_city": loc.city if loc else "Arambagh",
+                "branch_pincode": loc.pincode if loc else "712601",
+                "start_date": start_date.isoformat(),
+                "end_date": end_date.isoformat(),
                 "employee_id": a.employee_id,
                 "employee_name": "",
                 "employee_code": None,
                 "employee_names": [],
                 "line_items": [],
-                "total_days": 0,
+                "total_days": 0.0,
                 "total_amount": 0,
             }
             groups[cust_id] = g
@@ -139,17 +180,18 @@ async def _compute_month(
         emp = employees.get(a.employee_id)
         emp_name = emp.name if emp else a.employee_name
         emp_code = emp.code if emp else None
+        emp_cat = emp.category if emp else None
 
-        row_start = max(a.start_date, m_start)
-        row_end = min(a.end_date or m_end, m_end)
         g["line_items"].append(
             {
                 "assignment_id": str(a.id),
                 "employee_id": a.employee_id,
                 "employee_name": emp_name,
                 "employee_code": emp_code,
+                "employee_category": emp_cat,
                 "from": row_start.isoformat(),
                 "to": row_end.isoformat(),
+                "is_ongoing": not bool(a.end_date),
                 "shift": a.shift.value,
                 "shift_label": _format_shift(a.shift, a.start_time, a.end_time, a.shift_windows),
                 "start_time": a.start_time,
@@ -158,11 +200,16 @@ async def _compute_month(
                 "days": days,
                 "daily_rate": rate,
                 "amount": amount,
+                "bill_no": a.bill_no,
+                "is_replacement": a.is_replacement,
+                "replacement_reason": a.replacement_reason,
+                "replacement_for_employee_name": a.replacement_for_employee_name,
+                "replaced_by_employee_name": a.replaced_by_employee_name,
             }
         )
         if emp_name and emp_name not in g["employee_names"]:
             g["employee_names"].append(emp_name)
-        g["total_days"] += days
+        g["total_days"] = round(g["total_days"] + days, 2)
         g["total_amount"] += amount
 
     result = list(groups.values())
@@ -175,32 +222,63 @@ async def _compute_month(
         elif len(g["employee_names"]) > 1:
             g["employee_code"] = f"{len(g['employee_names'])} Staff"
 
-        # Check if bill number already allocated (modern customer key, or legacy emp:cust key)
+        # Check if bill number already allocated
         mb = issued.get(g["key"])
+        if not mb and month_label:
+            mb = issued.get(f"{g['customer_id']}:{month_label}")
         if not mb:
             for li in g["line_items"]:
-                mb = issued.get(f"{li['employee_id']}:{g['customer_id']}:{month}")
-                if mb:
+                if month_label:
+                    mb = issued.get(f"{li['employee_id']}:{g['customer_id']}:{month_label}")
+                if not mb and li.get("bill_no"):
+                    g["bill_no"] = li["bill_no"]
                     break
-        g["bill_no"] = mb.bill_no if mb else None
+        if mb:
+            g["bill_no"] = mb.bill_no
 
     result.sort(key=lambda g: (g["customer_name"] or "").lower())
     return result
 
 
-@router.get("/monthly", summary="Monthly customer bills")
+@router.get("/monthly", summary="General & Monthly customer bills")
+@router.get("/general", summary="General customer statement bills")
 async def monthly_bills(
-    month: str = Query(..., description="Billing month, YYYY-MM"),
+    month: Optional[str] = Query(None, description="Billing month, YYYY-MM"),
+    start_date: Optional[dt.date] = Query(None, description="Custom start date (inclusive)"),
+    end_date: Optional[dt.date] = Query(None, description="Custom end date (inclusive)"),
     location_id: Optional[str] = Query(None),
+    customer_id: Optional[str] = Query(None),
     actor: ActorContext = Depends(require_permission("assignments", "view")),
 ) -> dict:
-    bills = await _compute_month(actor, month, location_id)
+    if start_date and end_date:
+        if end_date < start_date:
+            raise BadRequestException("End date cannot be earlier than start date")
+        m_start = start_date
+        m_end = end_date
+        label = month or f"{start_date.isoformat()} to {end_date.isoformat()}"
+    elif month:
+        m_start, m_end = _month_bounds(month)
+        label = month
+    else:
+        today = dt.date.today()
+        month = f"{today.year:04d}-{today.month:02d}"
+        m_start, m_end = _month_bounds(month)
+        label = month
+
+    bills = await _compute_bills(actor, m_start, m_end, location_id, customer_id, month)
     totals = {
         "bills": len(bills),
-        "total_days": sum(b["total_days"] for b in bills),
+        "total_days": round(sum(b["total_days"] for b in bills), 2),
         "total_amount": sum(b["total_amount"] for b in bills),
     }
-    return success_response(data={"month": month, "totals": totals, "bills": bills})
+    return success_response(
+        data={
+            "month": month,
+            "period": {"start": m_start.isoformat(), "end": m_end.isoformat(), "label": label},
+            "totals": totals,
+            "bills": bills,
+        }
+    )
 
 
 async def _next_monthly_bill_no() -> int:
@@ -222,31 +300,48 @@ async def _next_monthly_bill_no() -> int:
 
 
 class IssueMonthlyBillRequest(BaseModel):
-    month: str
+    month: Optional[str] = None
+    start_date: Optional[dt.date] = None
+    end_date: Optional[dt.date] = None
     customer_id: str
     employee_id: Optional[str] = None
 
 
 @router.post("/monthly/issue", summary="Allocate a monthly bill number")
+@router.post("/issue", summary="Allocate a general bill number")
 async def issue_monthly_bill(
     payload: IssueMonthlyBillRequest,
     actor: ActorContext = Depends(require_permission("assignments", "view")),
 ) -> dict:
-    """Allocate (or reuse) the bill number for one customer's monthly bill."""
-    key = f"{payload.customer_id}:{payload.month}"
+    """Allocate (or reuse) the bill number for one customer's bill."""
+    period_key = payload.month or (
+        f"{payload.start_date.isoformat()}_{payload.end_date.isoformat()}"
+        if payload.start_date and payload.end_date
+        else "current"
+    )
+    key = f"{payload.customer_id}:{period_key}"
     existing = await MonthlyBill.find_one({"key": key})
     if existing is None and payload.employee_id:
         existing = await MonthlyBill.find_one(
-            {"key": f"{payload.employee_id}:{payload.customer_id}:{payload.month}"}
+            {"key": f"{payload.employee_id}:{payload.customer_id}:{period_key}"}
         )
     if existing is not None:
         return success_response(data={"bill_no": existing.bill_no})
 
+    if payload.start_date and payload.end_date:
+        m_start = payload.start_date
+        m_end = payload.end_date
+    elif payload.month:
+        m_start, m_end = _month_bounds(payload.month)
+    else:
+        today = dt.date.today()
+        m_start, m_end = _month_bounds(f"{today.year:04d}-{today.month:02d}")
+
     # Recompute the group so the snapshot + scope check are honest.
-    bills = await _compute_month(actor, payload.month, None)
+    bills = await _compute_bills(actor, m_start, m_end, None, payload.customer_id, payload.month)
     group = next((b for b in bills if b["customer_id"] == payload.customer_id), None)
     if group is None:
-        raise BadRequestException("No billable duty for this customer this month")
+        raise BadRequestException("No billable duty for this customer in this period")
 
     bill_no = await _next_monthly_bill_no()
     mb = MonthlyBill(
@@ -254,7 +349,7 @@ async def issue_monthly_bill(
         employee_id=payload.employee_id or group.get("employee_id") or "multiple",
         customer_id=payload.customer_id,
         location_id=group.get("location_id"),
-        month=payload.month,
+        month=payload.month or period_key,
         bill_no=bill_no,
         total_days=group.get("total_days"),
         total_amount=group.get("total_amount"),
