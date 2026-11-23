@@ -346,6 +346,16 @@ class BookingService:
                 if coords:
                     lat, lng = coords
 
+            notes_parts = [f"Converted from Booking #{booking.reference}."]
+            if booking.care_required:
+                notes_parts.append(f"Care required: {booking.care_required}")
+            if booking.patient_age:
+                notes_parts.append(f"Patient age: {booking.patient_age}")
+            if booking.emergency_contact_name or booking.emergency_contact_phone:
+                notes_parts.append(f"Emergency contact: {booking.emergency_contact_name or ''} {booking.emergency_contact_phone or ''}".strip())
+            if booking.message:
+                notes_parts.append(f"Booking message: {booking.message}")
+
             customer = Customer(
                 code=code,
                 name=booking.patient_name,
@@ -359,7 +369,7 @@ class BookingService:
                 care_type=CareType.HOME,
                 service_label=booking.service_name,
                 location_id=resolved_loc,
-                notes=f"Converted from Booking #{booking.reference}. Care required: {booking.care_required or 'N/A'}",
+                notes="\n".join(notes_parts),
                 is_active=True,
             )
             await customer.insert()
