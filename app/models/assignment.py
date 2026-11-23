@@ -96,7 +96,7 @@ class Assignment(TimestampedDocument):
     replaced_by_employee_id: Optional[str] = None
     replaced_by_employee_name: Optional[str] = None
     replacement_reason: Optional[str] = None
-    days_worked: Optional[int] = None
+    days_worked: Optional[float] = None
 
     notes: Optional[str] = None
 

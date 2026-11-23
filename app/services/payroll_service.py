@@ -17,7 +17,8 @@ from zoneinfo import ZoneInfo
 from app.models.assignment import Assignment
 from app.models.attendance import AttendanceRecord
 from app.models.employee import Employee
-from app.models.enums import AssignmentStatus, AttendanceStatus
+from app.models.enums import AssignmentStatus, AttendanceStatus, ShiftType
+from app.schemas.assignment import calculate_duty_days
 
 _PAYABLE = (AttendanceStatus.PRESENT, AttendanceStatus.HALF_DAY)
 _OFF = (AttendanceStatus.LEAVE, AttendanceStatus.OFF)
@@ -90,6 +91,18 @@ async def materialize_from_assignments(
     }
 
     existing = await _fetch_records(first, cap)
+
+    # Clean up orphan attendance records whose assignments have been deleted or cancelled
+    try:
+        all_asgs = await Assignment.find({}).to_list()
+        valid_asg_ids = {str(a.id) for a in all_asgs if a.status != AssignmentStatus.CANCELLED}
+        await AttendanceRecord.get_motor_collection().delete_many({
+            "assignment_id": {"$exists": True, "$ne": None, "$nin": list(valid_asg_ids)},
+        })
+        existing = await _fetch_records(first, cap)
+    except Exception:
+        pass
+
     handmarked: set = set()  # (employee_id, date) owned by the admin
     synced: set = set()      # (employee_id, date, assignment_id) already present
     for r in existing:
@@ -107,6 +120,36 @@ async def materialize_from_assignments(
         a_start = max(a.start_date, first)
         a_end = _effective_assignment_end(a, cap)
         total_assignment_days = max((a_end - a.start_date).days + 1, 1)
+
+        # Check if the assignment is shortened or if fractional duty applies
+        eff_days = a.days_worked
+        if eff_days is None and a.end_date:
+            eff_days = calculate_duty_days(a.start_date, a.end_date, a.start_time, a.end_time, a.shift)
+
+        is_half_day_end = bool(eff_days and (eff_days % 1 != 0))
+
+        # Delete any records beyond a_end that were generated in earlier runs
+        try:
+            await AttendanceRecord.get_motor_collection().delete_many({
+                "assignment_id": str(a.id),
+                "date": {"$gt": dt.datetime.combine(a_end, dt.time.max)},
+            })
+        except Exception:
+            pass
+
+        # If the last day is a half-day, update any existing records on a_end to HALF_DAY
+        if is_half_day_end:
+            try:
+                await AttendanceRecord.get_motor_collection().update_many(
+                    {
+                        "assignment_id": str(a.id),
+                        "date": {"$gte": dt.datetime.combine(a_end, dt.time.min), "$lte": dt.datetime.combine(a_end, dt.time.max)},
+                    },
+                    {"$set": {"status": AttendanceStatus.HALF_DAY.value}},
+                )
+            except Exception:
+                pass
+
         day = a_start
         while day <= a_end:
             day_idx = (day - a.start_date).days
@@ -121,6 +164,7 @@ async def materialize_from_assignments(
                 day_end_time = w.end
                 day_windows = [w]
 
+            rec_status = AttendanceStatus.HALF_DAY if (is_half_day_end and day == a_end) else AttendanceStatus.PRESENT
             key_day = (a.employee_id, day)
             key_syn = (a.employee_id, day, str(a.id))
             if key_day not in handmarked and key_syn not in synced:
@@ -130,7 +174,7 @@ async def materialize_from_assignments(
                         employee_name=a.employee_name,
                         location_id=a.location_id,
                         date=day,
-                        status=AttendanceStatus.PRESENT,
+                        status=rec_status,
                         shift=a.shift,
                         start_time=day_start_time,
                         end_time=day_end_time,
@@ -307,8 +351,8 @@ async def build_payslip(
                 break
 
     daily: List[dict] = []
-    for d in range(1, days + 1):
-        day = dt.date(first.year, first.month, d)
+    for d in range(days):
+        day = first + dt.timedelta(days=d)
         recs = by_date.get(day)
         if not recs:
             daily.append(
@@ -318,24 +362,54 @@ async def build_payslip(
                     "shift": None,
                     "start_time": None,
                     "end_time": None,
+                    "duration": None,
                     "customer_name": None,
                     "pay_rate": None,
                     "amount": 0,
                 }
             )
             continue
+
+        # Deduplicate multiple identical records for the day
+        seen_keys = set()
+        unique_recs: List[AttendanceRecord] = []
+        for r in recs:
+            k = (r.customer_name, r.shift.value if r.shift else None, r.start_time, r.end_time)
+            if k not in seen_keys:
+                seen_keys.add(k)
+                unique_recs.append(r)
+
         # One entry per shift worked that day (so two shifts show as two rows),
         # but the day is paid ONCE — the day's pay sits on the first paid shift,
         # extra shifts show amount 0 (same duty, no double pay).
-        day_amount = _date_amount(recs, fallback_rate)
+        day_amount = _date_amount(unique_recs, fallback_rate)
         paid_emitted = False
-        for rec in sorted(recs, key=lambda x: x.shift.value):
+        for rec in sorted(unique_recs, key=lambda x: x.shift.value):
             rate = rec.pay_rate if rec.pay_rate is not None else fallback_rate
             is_payable = rec.status in (AttendanceStatus.PRESENT, AttendanceStatus.HALF_DAY)
             amount = 0
             if is_payable and not paid_emitted:
                 amount = day_amount
                 paid_emitted = True
+
+            duration_str = None
+            if rec.status == AttendanceStatus.HALF_DAY:
+                duration_str = "Half Day (12 hrs)"
+            elif rec.shift == ShiftType.FULL_24H:
+                duration_str = "24 hrs"
+            elif rec.shift in (ShiftType.DAY, ShiftType.NIGHT, ShiftType.MORNING):
+                duration_str = "12 hrs"
+            elif rec.start_time and rec.end_time:
+                try:
+                    sh, sm = map(int, rec.start_time.split(":")[:2])
+                    eh, em = map(int, rec.end_time.split(":")[:2])
+                    dur_h = (eh * 60 + em - (sh * 60 + sm)) / 60.0
+                    if dur_h <= 0:
+                        dur_h += 24.0
+                    duration_str = f"{int(dur_h) if dur_h.is_integer() else dur_h:.1f} hrs"
+                except Exception:
+                    duration_str = "12 hrs"
+
             daily.append(
                 {
                     "date": day.isoformat(),
@@ -343,6 +417,7 @@ async def build_payslip(
                     "shift": rec.shift.value,
                     "start_time": rec.start_time,
                     "end_time": rec.end_time,
+                    "duration": duration_str,
                     "shift_windows": (
                         [w.model_dump() for w in rec.shift_windows] if rec.shift_windows else None
                     ),

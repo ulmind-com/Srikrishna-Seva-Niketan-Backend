@@ -40,6 +40,7 @@ class Employee(TimestampedDocument):
     pincode: Optional[str] = None
 
     category: str = "nurse"  # nurse / aaya / attendant / physio / japa / other
+    other_category: Optional[str] = None  # user-entered custom role when category == "other"
     gender: Optional[Gender] = None
     experience: Optional[str] = None  # e.g. "3 years"
 

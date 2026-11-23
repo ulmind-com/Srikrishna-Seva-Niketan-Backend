@@ -61,6 +61,52 @@ def _fmt_time(hhmm: Optional[str]) -> Optional[str]:
     return f"{h12}:{m_i:02d} {suffix}"
 
 
+def calculate_duty_days(
+    start_date: dt.date,
+    end_date: Optional[dt.date],
+    start_time: Optional[str] = None,
+    end_time: Optional[str] = None,
+    shift: ShiftType = ShiftType.FULL_24H,
+) -> float:
+    """Calculate the number of payable duty days (can be fractional, e.g. 14.5 days)."""
+    if not end_date:
+        return 0.0
+    if end_date < start_date:
+        return 0.0
+
+    calendar_days = (end_date - start_date).days + 1
+
+    if start_time and end_time:
+        try:
+            st_h, st_m = map(int, start_time.split(":")[:2])
+            et_h, et_m = map(int, end_time.split(":")[:2])
+            st_dt = dt.datetime.combine(start_date, dt.time(st_h, st_m))
+            et_dt = dt.datetime.combine(end_date, dt.time(et_h, et_m))
+
+            diff_seconds = (et_dt - st_dt).total_seconds()
+            if diff_seconds > 0:
+                hours = diff_seconds / 3600.0
+                if shift == ShiftType.FULL_24H:
+                    raw_days = hours / 24.0
+                    duty_days = round(raw_days * 2) / 2
+                    if duty_days > 0:
+                        return duty_days
+                elif shift in (ShiftType.DAY, ShiftType.NIGHT, ShiftType.MORNING):
+                    raw_shifts = hours / 12.0
+                    duty_days = round(raw_shifts * 2) / 2
+                    if duty_days > 0:
+                        return duty_days
+                else:
+                    raw_days = hours / 24.0
+                    duty_days = round(raw_days * 2) / 2
+                    if duty_days > 0:
+                        return duty_days
+        except Exception:
+            pass
+
+    return float(calendar_days)
+
+
 _SHIFT_LABEL = {
     "morning": "Morning",
     "day": "Day",
@@ -246,7 +292,7 @@ class AssignmentResponse(IdTimestampSchema):
     replaced_by_employee_id: Optional[str] = None
     replaced_by_employee_name: Optional[str] = None
     replacement_reason: Optional[str] = None
-    days_worked: Optional[int] = None
+    days_worked: Optional[float] = None
     notes: Optional[str] = None
 
     @computed_field  # type: ignore[prop-decorator]
@@ -260,31 +306,33 @@ class AssignmentResponse(IdTimestampSchema):
 
     @computed_field  # type: ignore[prop-decorator]
     @property
-    def total_days(self) -> Optional[int]:
+    def total_days(self) -> Optional[float]:
         """Length of the engagement in days, or None when open-ended."""
+        if self.days_worked is not None:
+            return self.days_worked
         if self.end_date is None:
             return None
-        return (self.end_date - self.start_date).days + 1
+        return calculate_duty_days(self.start_date, self.end_date, self.start_time, self.end_time, self.shift)
 
     @computed_field  # type: ignore[prop-decorator]
     @property
-    def days_elapsed(self) -> int:
+    def days_elapsed(self) -> float:
         """Days already completed — today is still counted as remaining."""
         today = dt.date.today()
         if today <= self.start_date:
-            return 0
+            return 0.0
         if self.end_date is not None and today > self.end_date:
-            return self.total_days or 0
-        return (today - self.start_date).days
+            return float(self.total_days or 0.0)
+        return float((today - self.start_date).days)
 
     @computed_field  # type: ignore[prop-decorator]
     @property
-    def days_remaining(self) -> Optional[int]:
+    def days_remaining(self) -> Optional[float]:
         """Days still to serve including today, or None when open-ended."""
         total = self.total_days
         if total is None:
             return None
-        return max(0, total - self.days_elapsed)
+        return max(0.0, float(total - self.days_elapsed))
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -331,14 +379,14 @@ class StaffAssignmentResponse(IdTimestampSchema):
 
     @computed_field  # type: ignore[prop-decorator]
     @property
-    def total_days(self) -> Optional[int]:
+    def total_days(self) -> Optional[float]:
         if self.end_date is None:
             return None
-        return (self.end_date - self.start_date).days + 1
+        return calculate_duty_days(self.start_date, self.end_date, self.start_time, self.end_time, self.shift)
 
     @computed_field  # type: ignore[prop-decorator]
     @property
-    def days_remaining(self) -> Optional[int]:
+    def days_remaining(self) -> Optional[float]:
         total = self.total_days
         if total is None:
             return None
@@ -346,5 +394,5 @@ class StaffAssignmentResponse(IdTimestampSchema):
         if today <= self.start_date:
             return total
         if self.end_date is not None and today > self.end_date:
-            return 0
-        return max(0, total - (today - self.start_date).days)
+            return 0.0
+        return max(0.0, float(total - (today - self.start_date).days))

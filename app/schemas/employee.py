@@ -20,6 +20,7 @@ class EmployeeCreate(BaseModel):
     city: Optional[str] = Field(None, max_length=80)
     pincode: Optional[str] = Field(None, max_length=12)
     category: str = Field("nurse", max_length=60)
+    other_category: Optional[str] = Field(None, max_length=60)
     gender: Optional[Gender] = None
     experience: Optional[str] = Field(None, max_length=100)
     photo: Optional[ImageAsset] = None
@@ -121,6 +122,7 @@ class EmployeeUpdate(BaseModel):
     city: Optional[str] = Field(None, max_length=80)
     pincode: Optional[str] = Field(None, max_length=12)
     category: Optional[str] = Field(None, max_length=60)
+    other_category: Optional[str] = Field(None, max_length=60)
     gender: Optional[Gender] = None
     experience: Optional[str] = Field(None, max_length=100)
     photo: Optional[ImageAsset] = None
@@ -223,6 +225,7 @@ class EmployeeResponse(IdTimestampSchema):
     city: Optional[str] = None
     pincode: Optional[str] = None
     category: str
+    other_category: Optional[str] = None
     gender: Optional[Gender] = None
     experience: Optional[str] = None
     photo: Optional[ImageAsset] = None

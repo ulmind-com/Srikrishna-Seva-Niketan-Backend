@@ -35,6 +35,7 @@ from app.schemas.assignment import (
     AssignmentCreate,
     AssignmentResponse,
     AssignmentUpdate,
+    calculate_duty_days,
 )
 from app.services.crud import CrudService
 from app.services.email_service import email_service
@@ -109,25 +110,78 @@ def _derive_amounts(
     end: Optional[dt.date],
     existing_cdr: Optional[int] = None,
     existing_edr: Optional[int] = None,
+    days_worked: Optional[float] = None,
 ) -> dict:
     """Set stored totals from the per-day rates: total = daily_rate × total_days.
 
+    Supports fractional days (e.g. 14.5 days) calculated via calculate_duty_days.
     Only runs when the engagement has a concrete end_date (a closed span). An
     explicit ``customer_rate`` / ``employee_payout`` in the payload always wins.
     Open-ended engagements keep null totals and are billed per calendar month.
     """
     if not (start and end):
         return data
-    total_days = (end - start).days + 1
+    if days_worked is not None and days_worked > 0:
+        total_days = days_worked
+    elif data.get("days_worked") is not None and float(data["days_worked"]) > 0:
+        total_days = float(data["days_worked"])
+    else:
+        st = data.get("start_time")
+        et = data.get("end_time")
+        shift = data.get("shift", ShiftType.FULL_24H)
+        total_days = calculate_duty_days(start, end, st, et, shift)
     if total_days <= 0:
         return data
     cdr = data.get("customer_daily_rate", existing_cdr)
     edr = data.get("employee_daily_rate", existing_edr)
     if cdr is not None and "customer_rate" not in data:
-        data["customer_rate"] = cdr * total_days
+        data["customer_rate"] = int(round(cdr * total_days))
     if edr is not None and "employee_payout" not in data:
-        data["employee_payout"] = edr * total_days
+        data["employee_payout"] = int(round(edr * total_days))
     return data
+
+
+async def _check_employee_conflict(
+    employee_id: str,
+    start_date: dt.date,
+    end_date: Optional[dt.date],
+    start_time: Optional[str] = None,
+    end_time: Optional[str] = None,
+    exclude_assignment_id: Optional[str] = None,
+) -> Optional[Assignment]:
+    """Check if the employee already has an active/scheduled assignment during the given dates."""
+    query: dict = {
+        "employee_id": employee_id,
+        "status": {"$in": [AssignmentStatus.SCHEDULED.value, AssignmentStatus.ACTIVE.value]},
+    }
+    if exclude_assignment_id:
+        from bson import ObjectId
+        from bson.errors import InvalidId
+        try:
+            query["_id"] = {"$ne": ObjectId(exclude_assignment_id)}
+        except (InvalidId, TypeError):
+            pass
+
+    existing_list = await Assignment.find(query).to_list()
+    target_end = end_date or dt.date.max
+
+    for a in existing_list:
+        a_end = a.end_date or dt.date.max
+        # No overlap if one ends before the other starts
+        if start_date > a_end or a.start_date > target_end:
+            continue
+
+        # Check boundary edge cases if on the exact same date
+        if start_date == a_end and a_end != dt.date.max:
+            if start_time and a.end_time and a.end_time <= start_time:
+                continue
+        if target_end == a.start_date and target_end != dt.date.max:
+            if end_time and a.start_time and end_time <= a.start_time:
+                continue
+
+        return a
+
+    return None
 
 
 @router.get("", summary="List assignments")
@@ -391,6 +445,20 @@ async def create_assignment(
         except Exception:
             pass
 
+    # Check for overlapping assignments (prevent double-booking staff)
+    conflict = await _check_employee_conflict(
+        payload.employee_id,
+        payload.start_date,
+        data.get("end_date"),
+        data.get("start_time"),
+        data.get("end_time"),
+    )
+    if conflict:
+        c_end = conflict.end_date.isoformat() if conflict.end_date else "Ongoing"
+        raise BadRequestException(
+            f"{employee.name} is already assigned/on-duty for {conflict.customer_name} from {conflict.start_date.isoformat()} to {c_end}."
+        )
+
     doc = await _assignments.create(data, actor)
 
     # Mark the staff member occupied.
@@ -468,6 +536,23 @@ async def update_assignment(
         coords = await geo_service.geocode(data["address"] or "")
         if coords is not None:
             data["dest_lat"], data["dest_lng"] = coords
+    # Validate conflict if employee or dates changed and assignment is active/scheduled
+    target_emp_id = data.get("employee_id") or existing.employee_id
+    if current_status in _OCCUPYING and ("employee_id" in data or "start_date" in data or "end_date" in data):
+        conflict = await _check_employee_conflict(
+            target_emp_id,
+            start_d,
+            data.get("end_date") if "end_date" in data else existing.end_date,
+            data.get("start_time") or existing.start_time,
+            data.get("end_time") or existing.end_time,
+            exclude_assignment_id=assignment_id,
+        )
+        if conflict:
+            c_end = conflict.end_date.isoformat() if conflict.end_date else "Ongoing"
+            raise BadRequestException(
+                f"Staff member is already assigned/on-duty for {conflict.customer_name} from {conflict.start_date.isoformat()} to {c_end}."
+            )
+
     doc = await _assignments.update(assignment_id, data, actor)
 
     # Keep the staff member's availability in sync + tell them about status changes.
@@ -476,6 +561,12 @@ async def update_assignment(
             await _set_employee_status(doc.employee_id, EmployeeStatus.ASSIGNED)
         elif doc.status in (AssignmentStatus.COMPLETED, AssignmentStatus.CANCELLED):
             await _set_employee_status(doc.employee_id, EmployeeStatus.AVAILABLE)
+            if doc.status == AssignmentStatus.CANCELLED:
+                try:
+                    from app.models.attendance import AttendanceRecord
+                    await AttendanceRecord.get_motor_collection().delete_many({"assignment_id": assignment_id})
+                except Exception:
+                    pass
         await notification_service.create(
             title="Assignment updated",
             message=f"Your assignment with {doc.customer_name} is now {doc.status}.",
@@ -566,13 +657,21 @@ async def admin_complete_assignment(
         if not existing.end_time:
             existing.end_time = now.strftime("%H:%M")
 
-    eff_days = max(1, (existing.end_date - existing.start_date).days + 1)
+    eff_days = calculate_duty_days(
+        existing.start_date,
+        existing.end_date,
+        existing.start_time,
+        existing.end_time,
+        existing.shift,
+    )
+    if eff_days <= 0:
+        eff_days = max(1.0, float((existing.end_date - existing.start_date).days + 1))
     existing.days_worked = eff_days
 
     if existing.customer_rate is None and existing.customer_daily_rate:
-        existing.customer_rate = existing.customer_daily_rate * eff_days
+        existing.customer_rate = int(round(existing.customer_daily_rate * eff_days))
     if existing.employee_payout is None and existing.employee_daily_rate:
-        existing.employee_payout = existing.employee_daily_rate * eff_days
+        existing.employee_payout = int(round(existing.employee_daily_rate * eff_days))
 
     ptype = str(getattr(existing, "payment_type", "prepaid"))
     is_postpaid = (ptype == "postpaid")
@@ -737,21 +836,24 @@ async def _perform_staff_replacement(
         existing.replaced_by_employee_id = str(new_emp.id)
         existing.replaced_by_employee_name = new_emp.name
         existing.replacement_reason = payload.reason
-        existing.days_worked = max(0, (old_end_date - existing.start_date).days + 1)
-        totals_dict = _derive_amounts(
-            {"customer_daily_rate": existing.customer_daily_rate, "employee_daily_rate": existing.employee_daily_rate},
-            existing.start_date,
-            old_end_date,
-            existing.customer_daily_rate,
-            existing.employee_daily_rate,
-        )
-        if "customer_rate" in totals_dict:
-            existing.customer_rate = totals_dict["customer_rate"]
-        if "employee_payout" in totals_dict:
-            existing.employee_payout = totals_dict["employee_payout"]
-
         if payload.start_time:
             existing.end_time = payload.start_time
+
+        duty_days = calculate_duty_days(
+            existing.start_date,
+            old_end_date,
+            existing.start_time,
+            existing.end_time,
+            existing.shift,
+        )
+        if duty_days <= 0:
+            duty_days = max(1.0, float((old_end_date - existing.start_date).days + 1))
+        existing.days_worked = duty_days
+
+        if existing.customer_daily_rate:
+            existing.customer_rate = int(round(existing.customer_daily_rate * duty_days))
+        if existing.employee_daily_rate:
+            existing.employee_payout = int(round(existing.employee_daily_rate * duty_days))
 
         if old_end_date <= today:
             existing.status = AssignmentStatus.COMPLETED
@@ -811,6 +913,21 @@ async def _perform_staff_replacement(
         + (f" | {payload.notes}" if payload.notes else ""),
     }
     _derive_amounts(new_data, payload.effective_date, target_end_date)
+
+    # Check conflict for the replacement staff member
+    conflict = await _check_employee_conflict(
+        str(new_emp.id),
+        payload.effective_date,
+        target_end_date,
+        target_start_time,
+        target_end_time,
+        exclude_assignment_id=assignment_id,
+    )
+    if conflict:
+        c_end = conflict.end_date.isoformat() if conflict.end_date else "Ongoing"
+        raise BadRequestException(
+            f"Replacement staff {new_emp.name} is already assigned to {conflict.customer_name} from {conflict.start_date.isoformat()} to {c_end}."
+        )
 
     new_assignment = await _assignments.create(new_data, actor)
     await _set_employee_status(str(new_emp.id), EmployeeStatus.ASSIGNED)
@@ -950,6 +1067,19 @@ async def multi_staff_assign(
         cdr = staff.customer_daily_rate if staff.customer_daily_rate is not None else payload.customer_daily_rate
         edr = staff.employee_daily_rate if staff.employee_daily_rate is not None else (payload.employee_daily_rate or emp.daily_rate)
 
+        conflict = await _check_employee_conflict(
+            str(emp.id),
+            payload.start_date,
+            calculated_end_date,
+            staff.start_time,
+            staff.end_time,
+        )
+        if conflict:
+            c_end = conflict.end_date.isoformat() if conflict.end_date else "Ongoing"
+            raise BadRequestException(
+                f"{emp.name} is already assigned/on-duty for {conflict.customer_name} from {conflict.start_date.isoformat()} to {c_end}."
+            )
+
         asg_data = {
             "customer_id": str(customer.id),
             "customer_name": customer.name,
@@ -1049,7 +1179,32 @@ async def delete_assignment(
 ) -> dict:
     existing = await _assignments.get_or_404(assignment_id)
     ensure_can_access(actor, existing.location_id)
+
+    # 1. Cascade delete all attendance records tied to this assignment
+    try:
+        from app.models.attendance import AttendanceRecord
+        await AttendanceRecord.get_motor_collection().delete_many({"assignment_id": assignment_id})
+    except Exception as e:
+        logger.warning("Could not cascade delete attendance for assignment %s: %s", assignment_id, e)
+
+    # 2. Cascade delete payments tied to this assignment
+    try:
+        from app.models.finance import Payment
+        await Payment.get_motor_collection().delete_many({"assignment_id": assignment_id})
+    except Exception as e:
+        logger.warning("Could not cascade delete payments for assignment %s: %s", assignment_id, e)
+
+    # 3. Delete assignment
     await _assignments.delete(assignment_id, actor)
+
+    # 4. Check if staff has any remaining active duties; if not, mark AVAILABLE
+    remaining_active = await Assignment.find_one({
+        "employee_id": existing.employee_id,
+        "status": {"$in": [AssignmentStatus.SCHEDULED.value, AssignmentStatus.ACTIVE.value]},
+    })
+    if not remaining_active:
+        await _set_employee_status(existing.employee_id, EmployeeStatus.AVAILABLE)
+
     from app.services.dashboard_service import invalidate_dashboard_cache
     invalidate_dashboard_cache()
-    return success_response(message="Assignment deleted")
+    return success_response(message="Assignment deleted and records cleaned up")

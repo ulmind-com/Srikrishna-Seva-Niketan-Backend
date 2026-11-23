@@ -350,17 +350,28 @@ async def delete_attendance(
 # Payslips
 # --------------------------------------------------------------------------
 
-@router.get("/payslip", summary="One employee's monthly payslip")
+@router.get("/payslip", summary="One employee's payslip / attendance statement")
 async def get_payslip(
     employee_id: str = Query(...),
     month: Optional[str] = Query(None, description="YYYY-MM; defaults to this month."),
+    start_date: Optional[dt.date] = Query(None, description="Custom start date (inclusive)"),
+    end_date: Optional[dt.date] = Query(None, description="Custom end date (inclusive)"),
     actor: ActorContext = Depends(require_permission("payroll", "view")),
 ) -> dict:
     employee = await _employees.get(employee_id)
     if employee is None:
         raise BadRequestException("Employee not found")
     ensure_can_access(actor, employee.location_id)
-    first, last, days = _month_bounds(month)
+
+    if start_date and end_date:
+        if end_date < start_date:
+            raise BadRequestException("End date cannot be earlier than start date")
+        first = start_date
+        last = end_date
+        days = (end_date - start_date).days + 1
+    else:
+        first, last, days = _month_bounds(month)
+
     # Auto-fill present days from this staff member's duties before reading.
     await payroll_service.materialize_from_assignments(
         first, last, [employee.location_id] if employee.location_id else None
