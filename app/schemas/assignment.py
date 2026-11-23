@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import datetime as dt
-from typing import List, Optional
+from typing import Any, List, Optional, Self
 
-from pydantic import BaseModel, Field, computed_field, field_validator
+from pydantic import BaseModel, Field, computed_field, field_validator, model_validator
 
 from app.models.assignment import ShiftWindow
 from app.models.enums import (
@@ -342,6 +342,24 @@ class AssignmentResponse(IdTimestampSchema):
         if not total:
             return None
         return min(100, round(self.days_elapsed / total * 100))
+
+    @model_validator(mode="after")
+    def sync_fractional_days_and_amounts(self) -> Self:
+        if self.start_date and self.end_date:
+            duty_days = calculate_duty_days(
+                self.start_date,
+                self.end_date,
+                self.start_time,
+                self.end_time,
+                self.shift,
+            )
+            if duty_days > 0:
+                self.days_worked = duty_days
+                if self.customer_daily_rate is not None:
+                    self.customer_rate = int(round(self.customer_daily_rate * duty_days))
+                if self.employee_daily_rate is not None:
+                    self.employee_payout = int(round(self.employee_daily_rate * duty_days))
+        return self
 
 
 class StaffAssignmentResponse(IdTimestampSchema):

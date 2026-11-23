@@ -231,6 +231,50 @@ async def seed_employees() -> None:
         logger.info("Seeded employee", extra={"code": emp.code, "name": emp.name})
 
 
+async def sync_duty_days_and_orphan_attendance() -> None:
+    """Ensure all existing assignments have accurate days_worked, customer_rate, employee_payout,
+    and clean up orphan attendance records.
+    """
+    try:
+        from app.models.assignment import Assignment
+        from app.models.attendance import AttendanceRecord
+        from app.schemas.assignment import calculate_duty_days
+        from app.models.enums import AssignmentStatus
+
+        all_asgs = await Assignment.find({}).to_list()
+        valid_ids = {str(a.id) for a in all_asgs if a.status != AssignmentStatus.CANCELLED}
+
+        # Clean orphan attendance records
+        await AttendanceRecord.get_motor_collection().delete_many({
+            "assignment_id": {"$exists": True, "$nin": list(valid_ids)}
+        })
+
+        # Recalculate any assignments with start_date and end_date
+        for a in all_asgs:
+            if a.start_date and a.end_date:
+                duty_days = calculate_duty_days(a.start_date, a.end_date, a.start_time, a.end_time, a.shift)
+                if duty_days > 0:
+                    changed = False
+                    if a.days_worked != duty_days:
+                        a.days_worked = duty_days
+                        changed = True
+                    if a.customer_daily_rate:
+                        expected_cr = int(round(a.customer_daily_rate * duty_days))
+                        if a.customer_rate != expected_cr:
+                            a.customer_rate = expected_cr
+                            changed = True
+                    if a.employee_daily_rate:
+                        expected_ep = int(round(a.employee_daily_rate * duty_days))
+                        if a.employee_payout != expected_ep:
+                            a.employee_payout = expected_ep
+                            changed = True
+                    if changed:
+                        await a.save()
+                        logger.info("Synced duty days and billing for assignment", extra={"assignment_id": str(a.id), "days": duty_days})
+    except Exception as e:
+        logger.warning("Could not sync duty days on startup: %s", e)
+
+
 async def run_seed() -> None:
     """Run all seeders in order (safe to run on every startup)."""
     await seed_permissions()
@@ -238,3 +282,4 @@ async def run_seed() -> None:
     await seed_admin()
     await seed_locations()
     await seed_employees()
+    await sync_duty_days_and_orphan_attendance()
