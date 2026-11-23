@@ -40,7 +40,7 @@ def _effective_assignment_end(a: Assignment, cap: dt.date) -> dt.date:
     """
     if a.end_date is not None:
         return min(a.end_date, cap)
-    if a.status == AssignmentStatus.COMPLETED:
+    if a.status in (AssignmentStatus.COMPLETED, AssignmentStatus.REPLACED):
         if a.days_worked:
             return min(a.start_date + dt.timedelta(days=max(a.days_worked - 1, 0)), cap)
         if a.shift_windows and len(a.shift_windows) > 1:

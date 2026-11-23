@@ -936,7 +936,7 @@ async def my_assignments(
     filters: dict = {"employee_id": str(staff.id)}
     if pending:
         filters["acceptance_status"] = AcceptanceStatus.PENDING.value
-        filters["status"] = {"$nin": [AssignmentStatus.COMPLETED.value, AssignmentStatus.CANCELLED.value]}
+        filters["status"] = {"$nin": [AssignmentStatus.COMPLETED.value, AssignmentStatus.CANCELLED.value, AssignmentStatus.REPLACED.value]}
     rows = await Assignment.find(filters).sort("-start_date").to_list()
     phones: dict[str, Optional[str]] = {}
     valid_cids = [ObjectId(cid) for cid in {a.customer_id for a in rows if a.customer_id} if ObjectId.is_valid(cid)]

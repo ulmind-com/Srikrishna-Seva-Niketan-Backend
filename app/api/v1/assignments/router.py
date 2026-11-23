@@ -864,8 +864,8 @@ async def _perform_staff_replacement(
         if existing.employee_daily_rate:
             existing.employee_payout = int(round(existing.employee_daily_rate * duty_days))
 
+        existing.status = AssignmentStatus.REPLACED
         if old_end_date <= today:
-            existing.status = AssignmentStatus.COMPLETED
             await _set_employee_status(existing.employee_id, EmployeeStatus.AVAILABLE)
 
         note_suffix = f"Handed over to {new_emp.name} on {payload.effective_date}. Reason: {payload.reason or 'Staff emergency/leave'}"

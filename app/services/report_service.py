@@ -26,7 +26,7 @@ from app.models.customer import Customer
 from app.models.employee import Employee
 from app.models.enums import AssignmentStatus, EmployeeStatus, PaymentStatus
 from app.models.finance import Expense, Payment
-from app.schemas.assignment import _format_shift
+from app.schemas.assignment import _format_shift, calculate_duty_days
 
 
 def _date_bounds(
@@ -495,15 +495,19 @@ async def duty_report(
 
         # Days billed: the full span for a closed engagement, or days elapsed so
         # far for an ongoing one (so an open duty still shows accrued value).
-        if a.end_date:
-            eff_days = (a.end_date - a.start_date).days + 1
+        if a.days_worked is not None:
+            eff_days = a.days_worked
+        elif a.end_date:
+            eff_days = calculate_duty_days(
+                a.start_date, a.end_date, a.start_time, a.end_time, a.shift, a.duty_breaks
+            )
         else:
-            eff_days = max(1, (today - a.start_date).days + 1)
+            eff_days = max(1.0, float((today - a.start_date).days + 1))
 
         # Prefer the stored total; for an ongoing duty (no stored total) derive
         # it from the per-day rate × elapsed days so bill/pay are never ₹0.
-        bill = a.customer_rate if a.customer_rate is not None else (a.customer_daily_rate or 0) * eff_days
-        payout = a.employee_payout if a.employee_payout is not None else (a.employee_daily_rate or 0) * eff_days
+        bill = a.customer_rate if a.customer_rate is not None else int(round((a.customer_daily_rate or 0) * eff_days))
+        payout = a.employee_payout if a.employee_payout is not None else int(round((a.employee_daily_rate or 0) * eff_days))
         exp = a.other_expense or 0
         profit = bill - payout - exp
         margin = round(profit / bill * 100) if bill > 0 else 0
@@ -528,17 +532,25 @@ async def duty_report(
                 prepaid_count += 1
                 prepaid_total += bill
 
-        duration_days = (
-            (a.end_date - a.start_date).days + 1
-            if a.end_date
-            else None
-        )
+        if a.days_worked is not None:
+            duration_days = a.days_worked
+        elif a.end_date:
+            duration_days = calculate_duty_days(
+                a.start_date, a.end_date, a.start_time, a.end_time, a.shift, a.duty_breaks
+            )
+        else:
+            duration_days = None
 
         items.append({
             "id": str(a.id),
             "start_date": a.start_date.isoformat(),
             "end_date": a.end_date.isoformat() if a.end_date else None,
             "duration_days": duration_days,
+            "days_worked": a.days_worked,
+            "is_replacement": bool(a.is_replacement),
+            "replacement_for_employee_name": a.replacement_for_employee_name,
+            "replaced_by_employee_name": a.replaced_by_employee_name,
+            "replacement_reason": a.replacement_reason,
             "customer_id": a.customer_id,
             "customer_name": a.customer_name,
             "customer_phone": cust.phone if cust else None,

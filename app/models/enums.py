@@ -173,6 +173,7 @@ class AssignmentStatus(StrEnum):
     ACTIVE = "active"
     COMPLETED = "completed"
     CANCELLED = "cancelled"
+    REPLACED = "replaced"
 
 
 class AcceptanceStatus(StrEnum):
