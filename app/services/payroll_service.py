@@ -17,7 +17,7 @@ from zoneinfo import ZoneInfo
 from app.models.assignment import Assignment
 from app.models.attendance import AttendanceRecord
 from app.models.employee import Employee
-from app.models.enums import AssignmentStatus, AttendanceStatus, ShiftType
+from app.models.enums import AssignmentStatus, AttendanceStatus, ShiftType, StaffVerificationStatus
 from app.schemas.assignment import calculate_duty_days
 
 _PAYABLE = (AttendanceStatus.PRESENT, AttendanceStatus.HALF_DAY)
@@ -114,7 +114,7 @@ async def materialize_from_assignments(
     new_rows: List[AttendanceRecord] = []
     for a in assignments:
         emp = employees.get(a.employee_id)
-        if emp is None:
+        if emp is None or emp.verification_status != StaffVerificationStatus.VERIFIED:
             continue
         rate = a.employee_daily_rate if a.employee_daily_rate is not None else emp.daily_rate
         a_start = max(a.start_date, first)
@@ -124,7 +124,7 @@ async def materialize_from_assignments(
         # Check if the assignment is shortened or if fractional duty applies
         eff_days = a.days_worked
         if eff_days is None and a.end_date:
-            eff_days = calculate_duty_days(a.start_date, a.end_date, a.start_time, a.end_time, a.shift)
+            eff_days = calculate_duty_days(a.start_date, a.end_date, a.start_time, a.end_time, a.shift, a.duty_breaks)
 
         is_half_day_end = bool(eff_days and (eff_days % 1 != 0))
 
@@ -137,13 +137,37 @@ async def materialize_from_assignments(
         except Exception:
             pass
 
-        # If the last day is a half-day, update any existing records on a_end to HALF_DAY
+        # If assignment has duty breaks, ensure records in break periods are set to OFF / 0 rate
+        if a.duty_breaks:
+            for b in a.duty_breaks:
+                try:
+                    await AttendanceRecord.get_motor_collection().update_many(
+                        {
+                            "assignment_id": str(a.id),
+                            "date": {
+                                "$gte": dt.datetime.combine(b.start_date, dt.time.min),
+                                "$lte": dt.datetime.combine(b.end_date, dt.time.max),
+                            },
+                        },
+                        {
+                            "$set": {
+                                "status": AttendanceStatus.OFF.value,
+                                "pay_rate": 0,
+                                "note": f"Break: {b.reason or 'Duty pause'}",
+                            }
+                        },
+                    )
+                except Exception:
+                    pass
+
+        # If the last day is a half-day and not a break day, update any existing records on a_end to HALF_DAY
         if is_half_day_end:
             try:
                 await AttendanceRecord.get_motor_collection().update_many(
                     {
                         "assignment_id": str(a.id),
                         "date": {"$gte": dt.datetime.combine(a_end, dt.time.min), "$lte": dt.datetime.combine(a_end, dt.time.max)},
+                        "status": {"$ne": AttendanceStatus.OFF.value},
                     },
                     {"$set": {"status": AttendanceStatus.HALF_DAY.value}},
                 )
@@ -157,14 +181,30 @@ async def materialize_from_assignments(
             day_end_time = a.end_time
             day_windows = a.shift_windows
 
-            # If the assignment specifies distinct per-day shift windows (e.g. Day 1 overnight, Day 2 day shift)
+            # If the assignment specifies distinct per-day shift windows
             if a.shift_windows and len(a.shift_windows) == total_assignment_days and 0 <= day_idx < len(a.shift_windows):
                 w = a.shift_windows[day_idx]
                 day_start_time = w.start
                 day_end_time = w.end
                 day_windows = [w]
 
-            rec_status = AttendanceStatus.HALF_DAY if (is_half_day_end and day == a_end) else AttendanceStatus.PRESENT
+            # Check if this day is a break day
+            break_match = None
+            if a.duty_breaks:
+                for b in a.duty_breaks:
+                    if b.start_date <= day <= b.end_date:
+                        break_match = b
+                        break
+
+            if break_match:
+                rec_status = AttendanceStatus.OFF
+                day_rate = 0
+                day_note = f"Break: {break_match.reason or 'Duty pause'}"
+            else:
+                rec_status = AttendanceStatus.HALF_DAY if (is_half_day_end and day == a_end) else AttendanceStatus.PRESENT
+                day_rate = rate
+                day_note = None
+
             key_day = (a.employee_id, day)
             key_syn = (a.employee_id, day, str(a.id))
             if key_day not in handmarked and key_syn not in synced:
@@ -181,7 +221,8 @@ async def materialize_from_assignments(
                         shift_windows=day_windows,
                         assignment_id=str(a.id),
                         customer_name=a.customer_name,
-                        pay_rate=rate,
+                        pay_rate=day_rate,
+                        note=day_note,
                     )
                 )
                 synced.add(key_syn)
@@ -464,7 +505,10 @@ async def payroll_run(
     ``location_ids`` restricts to those branches (branch-scoped managers); pass
     ``None`` for an unscoped, firm-wide run.
     """
-    emp_filter: dict = {"is_active": True}
+    emp_filter: dict = {
+        "is_active": True,
+        "verification_status": StaffVerificationStatus.VERIFIED.value,
+    }
     if location_ids is not None:
         emp_filter["location_id"] = {"$in": location_ids}
     employees = await Employee.find(emp_filter).to_list()

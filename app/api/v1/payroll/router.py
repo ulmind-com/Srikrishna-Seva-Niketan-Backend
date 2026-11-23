@@ -24,7 +24,7 @@ from app.dependencies.scoping import ensure_can_access
 from app.models.assignment import Assignment
 from app.models.attendance import AttendanceRecord
 from app.models.employee import Employee
-from app.models.enums import AssignmentStatus, AttendanceStatus
+from app.models.enums import AssignmentStatus, AttendanceStatus, StaffVerificationStatus
 from app.repositories.base import BaseRepository
 from app.schemas.attendance import (
     AttendanceBulkCreate,
@@ -362,6 +362,9 @@ async def get_payslip(
     if employee is None:
         raise BadRequestException("Employee not found")
     ensure_can_access(actor, employee.location_id)
+
+    if employee.verification_status != StaffVerificationStatus.VERIFIED:
+        raise BadRequestException("Only verified staff members have payslips. Please verify staff first.")
 
     if start_date and end_date:
         if end_date < start_date:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 import datetime as dt
 from typing import List, Optional
 
@@ -17,6 +18,18 @@ class ShiftWindow(BaseModel):
 
     start: Optional[str] = None
     end: Optional[str] = None
+
+
+class DutyBreak(BaseModel):
+    """Temporary duty pause / break / gap (ছুটি / সাময়িক বন্ধ) within an assignment."""
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex[:8])
+    start_date: dt.date
+    end_date: dt.date
+    start_time: Optional[str] = None  # e.g. "07:00"
+    end_time: Optional[str] = None    # e.g. "19:00"
+    reason: Optional[str] = "Customer request / staff leave"
+    created_at: dt.datetime = Field(default_factory=lambda: dt.datetime.now(dt.timezone.utc))
 from app.models.enums import (
     AcceptanceStatus,
     AssignmentPlace,
@@ -97,6 +110,7 @@ class Assignment(TimestampedDocument):
     replaced_by_employee_name: Optional[str] = None
     replacement_reason: Optional[str] = None
     days_worked: Optional[float] = None
+    duty_breaks: Optional[List[DutyBreak]] = Field(default_factory=list)
 
     notes: Optional[str] = None
 

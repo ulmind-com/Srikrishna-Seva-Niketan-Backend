@@ -93,7 +93,7 @@ class Employee(TimestampedDocument):
     previous_employer: Optional[str] = None
 
     # ---- Verification workflow ------------------------------------------
-    verification_status: StaffVerificationStatus = StaffVerificationStatus.DRAFT
+    verification_status: StaffVerificationStatus = StaffVerificationStatus.VERIFIED
     submitted_at: Optional[dt.datetime] = None
     verified_at: Optional[dt.datetime] = None
     verified_by: Optional[str] = None  # admin user id

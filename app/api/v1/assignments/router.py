@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import logging
+import uuid
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
@@ -16,18 +17,21 @@ from app.core.pagination import PaginationParams, pagination_params
 from app.core.responses import success_response
 from app.dependencies.auth import ActorContext, require_permission
 from app.dependencies.scoping import ensure_can_access
-from app.models.assignment import Assignment, ShiftWindow
+from app.models.assignment import Assignment, DutyBreak, ShiftWindow
+from app.models.attendance import AttendanceRecord
 from app.models.customer import Customer
 from app.models.employee import Employee
 from app.models.enums import (
     AcceptanceStatus,
     AssignmentPlace,
     AssignmentStatus,
+    AttendanceStatus,
     EmployeeStatus,
     NotificationType,
     PaymentMode,
     PaymentStatus,
     ShiftType,
+    StaffVerificationStatus,
 )
 from app.models.location import Location
 from app.repositories.base import BaseRepository
@@ -35,6 +39,7 @@ from app.schemas.assignment import (
     AssignmentCreate,
     AssignmentResponse,
     AssignmentUpdate,
+    DutyBreakCreate,
     calculate_duty_days,
 )
 from app.services.crud import CrudService
@@ -376,6 +381,8 @@ async def create_assignment(
     employee = await _employees.get(payload.employee_id)
     if employee is None:
         raise BadRequestException("Employee not found")
+    if employee.verification_status != StaffVerificationStatus.VERIFIED:
+        raise BadRequestException("Cannot assign staff whose verification is pending or not verified. Please verify staff first.")
     # Branch auto-alignment: ensure customer and staff are aligned to a valid branch
     if not customer.location_id and employee.location_id:
         customer.location_id = employee.location_id
@@ -812,6 +819,8 @@ async def _perform_staff_replacement(
     new_emp = await _employees.get(payload.new_employee_id)
     if not new_emp:
         raise BadRequestException("Replacement employee not found")
+    if new_emp.verification_status != StaffVerificationStatus.VERIFIED:
+        raise BadRequestException("Replacement staff member is not verified. Please select a verified staff member.")
     if str(new_emp.id) == existing.employee_id:
         raise BadRequestException("Replacement staff must be different from current staff")
 
@@ -1063,6 +1072,8 @@ async def multi_staff_assign(
         emp = await _employees.get(staff.employee_id)
         if not emp:
             raise BadRequestException(f"Employee {staff.employee_id} not found")
+        if emp.verification_status != StaffVerificationStatus.VERIFIED:
+            raise BadRequestException(f"Staff member {emp.name} is not verified. Please select verified staff.")
 
         cdr = staff.customer_daily_rate if staff.customer_daily_rate is not None else payload.customer_daily_rate
         edr = staff.employee_daily_rate if staff.employee_daily_rate is not None else (payload.employee_daily_rate or emp.daily_rate)
@@ -1208,3 +1219,145 @@ async def delete_assignment(
     from app.services.dashboard_service import invalidate_dashboard_cache
     invalidate_dashboard_cache()
     return success_response(message="Assignment deleted and records cleaned up")
+
+
+@router.post("/{assignment_id}/breaks", summary="Add a temporary duty break / pause to an assignment")
+async def add_duty_break(
+    assignment_id: str,
+    payload: DutyBreakCreate,
+    actor: ActorContext = Depends(require_permission("assignments", "update")),
+) -> dict:
+    """Add a temporary break / pause (ছুটি / গ্যাপ) to an ongoing duty."""
+    assignment = await _assignments.get_or_404(assignment_id)
+    ensure_can_access(actor, assignment.location_id)
+
+    if payload.start_date < assignment.start_date:
+        raise BadRequestException(f"Break start date ({payload.start_date}) cannot be before duty start date ({assignment.start_date})")
+    if assignment.end_date and payload.end_date > assignment.end_date:
+        raise BadRequestException(f"Break end date ({payload.end_date}) cannot be after duty end date ({assignment.end_date})")
+    if payload.end_date < payload.start_date:
+        raise BadRequestException("Break end date cannot be earlier than start date")
+
+    new_break = DutyBreak(
+        id=uuid.uuid4().hex[:8],
+        start_date=payload.start_date,
+        end_date=payload.end_date,
+        start_time=payload.start_time,
+        end_time=payload.end_time,
+        reason=payload.reason or "Customer request / staff leave",
+    )
+    if assignment.duty_breaks is None:
+        assignment.duty_breaks = []
+    assignment.duty_breaks.append(new_break)
+
+    # Recalculate days worked and rates
+    duty_days = calculate_duty_days(
+        assignment.start_date,
+        assignment.end_date,
+        assignment.start_time,
+        assignment.end_time,
+        assignment.shift,
+        assignment.duty_breaks,
+    )
+    assignment.days_worked = duty_days
+    if assignment.customer_daily_rate is not None:
+        assignment.customer_rate = int(round(assignment.customer_daily_rate * duty_days))
+    if assignment.employee_daily_rate is not None:
+        assignment.employee_payout = int(round(assignment.employee_daily_rate * duty_days))
+
+    assignment.touch()
+    await assignment.save()
+
+    # Sync attendance records in the break period to OFF / 0 rate
+    try:
+        await AttendanceRecord.get_motor_collection().update_many(
+            {
+                "assignment_id": str(assignment.id),
+                "date": {
+                    "$gte": dt.datetime.combine(payload.start_date, dt.time.min),
+                    "$lte": dt.datetime.combine(payload.end_date, dt.time.max),
+                },
+            },
+            {
+                "$set": {
+                    "status": AttendanceStatus.OFF.value,
+                    "pay_rate": 0,
+                    "note": f"Break: {payload.reason or 'Duty pause'}",
+                }
+            },
+        )
+    except Exception as exc:
+        logger.warning("Failed to sync attendance on break addition: %s", exc)
+
+    from app.services.dashboard_service import invalidate_dashboard_cache
+    invalidate_dashboard_cache()
+
+    return item_response(AssignmentResponse, assignment, "Duty break added successfully")
+
+
+@router.delete("/{assignment_id}/breaks/{break_id}", summary="Remove a temporary duty break from an assignment")
+async def remove_duty_break(
+    assignment_id: str,
+    break_id: str,
+    actor: ActorContext = Depends(require_permission("assignments", "update")),
+) -> dict:
+    """Remove a duty break so the staff member resumes normal paid duty."""
+    assignment = await _assignments.get_or_404(assignment_id)
+    ensure_can_access(actor, assignment.location_id)
+
+    if not assignment.duty_breaks:
+        raise BadRequestException("No duty breaks found on this assignment")
+
+    matched = [b for b in assignment.duty_breaks if b.id == break_id]
+    if not matched:
+        raise BadRequestException(f"Duty break {break_id} not found")
+    target_break = matched[0]
+
+    assignment.duty_breaks = [b for b in assignment.duty_breaks if b.id != break_id]
+
+    duty_days = calculate_duty_days(
+        assignment.start_date,
+        assignment.end_date,
+        assignment.start_time,
+        assignment.end_time,
+        assignment.shift,
+        assignment.duty_breaks,
+    )
+    assignment.days_worked = duty_days
+    if assignment.customer_daily_rate is not None:
+        assignment.customer_rate = int(round(assignment.customer_daily_rate * duty_days))
+    if assignment.employee_daily_rate is not None:
+        assignment.employee_payout = int(round(assignment.employee_daily_rate * duty_days))
+
+    assignment.touch()
+    await assignment.save()
+
+    # Reset attendance records for the removed break dates back to PRESENT
+    try:
+        emp_rate = assignment.employee_daily_rate
+        if emp_rate is None:
+            emp = await _employees.get(assignment.employee_id)
+            emp_rate = emp.daily_rate if emp else 0
+        await AttendanceRecord.get_motor_collection().update_many(
+            {
+                "assignment_id": str(assignment.id),
+                "date": {
+                    "$gte": dt.datetime.combine(target_break.start_date, dt.time.min),
+                    "$lte": dt.datetime.combine(target_break.end_date, dt.time.max),
+                },
+            },
+            {
+                "$set": {
+                    "status": AttendanceStatus.PRESENT.value,
+                    "pay_rate": emp_rate,
+                    "note": None,
+                }
+            },
+        )
+    except Exception as exc:
+        logger.warning("Failed to reset attendance on break removal: %s", exc)
+
+    from app.services.dashboard_service import invalidate_dashboard_cache
+    invalidate_dashboard_cache()
+
+    return item_response(AssignmentResponse, assignment, "Duty break removed successfully")

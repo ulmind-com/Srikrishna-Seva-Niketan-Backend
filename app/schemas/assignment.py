@@ -7,7 +7,7 @@ from typing import Any, List, Optional, Self
 
 from pydantic import BaseModel, Field, computed_field, field_validator, model_validator
 
-from app.models.assignment import ShiftWindow
+from app.models.assignment import DutyBreak, ShiftWindow
 from app.models.enums import (
     AcceptanceStatus,
     AssignmentPlace,
@@ -17,6 +17,33 @@ from app.models.enums import (
     ShiftType,
 )
 from app.schemas.common import IdTimestampSchema
+
+
+class DutyBreakCreate(BaseModel):
+    """Payload to add a temporary pause / duty break."""
+
+    start_date: dt.date
+    end_date: dt.date
+    start_time: Optional[str] = None
+    end_time: Optional[str] = None
+    reason: Optional[str] = "Customer request / staff leave"
+
+    @field_validator("start_date", "end_date", mode="before")
+    @classmethod
+    def validate_dates(cls, v):
+        return _parse_flexible_date(v)
+
+
+class DutyBreakResponse(BaseModel):
+    """Duty break record representation."""
+
+    id: str
+    start_date: dt.date
+    end_date: dt.date
+    start_time: Optional[str] = None
+    end_time: Optional[str] = None
+    reason: Optional[str] = None
+    created_at: Optional[dt.datetime] = None
 
 
 def _parse_flexible_date(v):
@@ -61,14 +88,14 @@ def _fmt_time(hhmm: Optional[str]) -> Optional[str]:
     return f"{h12}:{m_i:02d} {suffix}"
 
 
-def calculate_duty_days(
+def _calculate_raw_duty_days(
     start_date: dt.date,
     end_date: Optional[dt.date],
     start_time: Optional[str] = None,
     end_time: Optional[str] = None,
     shift: ShiftType = ShiftType.FULL_24H,
 ) -> float:
-    """Calculate the number of payable duty days (can be fractional, e.g. 14.5 days)."""
+    """Calculate the base duty days without deducting breaks."""
     if not end_date:
         return 0.0
     if end_date < start_date:
@@ -105,6 +132,46 @@ def calculate_duty_days(
             pass
 
     return float(calendar_days)
+
+
+def calculate_duty_days(
+    start_date: dt.date,
+    end_date: Optional[dt.date],
+    start_time: Optional[str] = None,
+    end_time: Optional[str] = None,
+    shift: ShiftType = ShiftType.FULL_24H,
+    duty_breaks: Optional[Sequence[Any]] = None,
+) -> float:
+    """Calculate the net payable duty days, deducting any temporary breaks / pause."""
+    if not end_date:
+        return 0.0
+    if end_date < start_date:
+        return 0.0
+
+    gross_days = _calculate_raw_duty_days(start_date, end_date, start_time, end_time, shift)
+    if not duty_breaks:
+        return gross_days
+
+    total_break_days = 0.0
+    for b in duty_breaks:
+        b_dict = b if isinstance(b, dict) else (b.model_dump() if hasattr(b, "model_dump") else b.__dict__)
+        b_start = _parse_flexible_date(b_dict.get("start_date"))
+        b_end = _parse_flexible_date(b_dict.get("end_date"))
+        if not b_start or not b_end:
+            continue
+        c_start = max(b_start, start_date)
+        c_end = min(b_end, end_date)
+        if c_end < c_start:
+            continue
+        b_st = b_dict.get("start_time")
+        b_et = b_dict.get("end_time")
+        if b_st and b_et:
+            b_days = _calculate_raw_duty_days(c_start, c_end, b_st, b_et, shift)
+        else:
+            b_days = float((c_end - c_start).days + 1)
+        total_break_days += b_days
+
+    return max(0.0, round((gross_days - total_break_days) * 2) / 2)
 
 
 _SHIFT_LABEL = {
@@ -222,6 +289,7 @@ class AssignmentUpdate(BaseModel):
     employee_payout: Optional[int] = Field(None, ge=0)
     other_expense: Optional[int] = Field(None, ge=0)
     notes: Optional[str] = Field(None, max_length=2000)
+    duty_breaks: Optional[List[DutyBreakCreate]] = None
     dest_lat: Optional[float] = Field(None, ge=-90, le=90)
     dest_lng: Optional[float] = Field(None, ge=-180, le=180)
 
@@ -293,6 +361,7 @@ class AssignmentResponse(IdTimestampSchema):
     replaced_by_employee_name: Optional[str] = None
     replacement_reason: Optional[str] = None
     days_worked: Optional[float] = None
+    duty_breaks: Optional[List[DutyBreakResponse]] = Field(default_factory=list)
     notes: Optional[str] = None
 
     @computed_field  # type: ignore[prop-decorator]
@@ -312,7 +381,7 @@ class AssignmentResponse(IdTimestampSchema):
             return self.days_worked
         if self.end_date is None:
             return None
-        return calculate_duty_days(self.start_date, self.end_date, self.start_time, self.end_time, self.shift)
+        return calculate_duty_days(self.start_date, self.end_date, self.start_time, self.end_time, self.shift, self.duty_breaks)
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -352,6 +421,7 @@ class AssignmentResponse(IdTimestampSchema):
                 self.start_time,
                 self.end_time,
                 self.shift,
+                self.duty_breaks,
             )
             if duty_days > 0:
                 self.days_worked = duty_days
