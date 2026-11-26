@@ -23,7 +23,7 @@ from app.models.assignment import Assignment
 from app.models.billing import MonthlyBill
 from app.models.customer import Customer
 from app.models.employee import Employee
-from app.models.enums import AssignmentStatus
+from app.models.enums import AssignmentStatus, ShiftType
 from app.models.location import Location
 from app.schemas.assignment import _format_shift, calculate_duty_days
 
@@ -122,36 +122,43 @@ async def _compute_bills(
     # even when duty was split across multiple staff members (e.g. replacement).
     groups: dict[str, dict] = {}
     for a in assignments:
+        clipped_start = a.start_date < start_date
+        clipped_end = a.end_date is None or a.end_date > end_date
         row_start = max(a.start_date, start_date)
         row_end = min(a.end_date or end_date, end_date)
         if row_end < row_start:
             continue
 
-        if (
-            a.start_date >= start_date
-            and a.end_date
-            and a.end_date <= end_date
-            and a.days_worked is not None
-            and a.days_worked >= 0
-        ):
-            days = float(a.days_worked)
+        # Replacement staff taking over on the exact boundary cutoff date of a 24h cycle
+        # has 0 completed hours inside [start_date, end_date].
+        if a.is_replacement and a.shift == ShiftType.FULL_24H and clipped_end and a.start_date == end_date:
+            continue
+
+        if a.shift == ShiftType.FULL_24H:
+            row_st = None if (clipped_start and clipped_end) else a.start_time
+            row_et = None if clipped_end else a.end_time
         else:
-            days = calculate_duty_days(
-                row_start,
-                row_end,
-                a.start_time,
-                a.end_time,
-                a.shift,
-                a.duty_breaks,
-                a.shift_windows,
-                is_handover=(a.status == AssignmentStatus.REPLACED),
-            )
+            row_st = a.start_time
+            row_et = a.end_time
+
+        days = calculate_duty_days(
+            row_start,
+            row_end,
+            row_st,
+            row_et,
+            a.shift,
+            a.duty_breaks,
+            a.shift_windows,
+            is_handover=(not clipped_end and a.status == AssignmentStatus.REPLACED),
+        )
 
         if days <= 0:
             continue
 
         rate = _daily_rate(a)
-        if a.days_worked is not None and a.days_worked == days and a.customer_rate is not None:
+        if a.customer_daily_rate is not None and a.customer_daily_rate > 0:
+            amount = int(round(a.customer_daily_rate * days))
+        elif not clipped_start and not clipped_end and a.customer_rate is not None:
             amount = a.customer_rate
         else:
             amount = int(round(rate * days))
@@ -199,6 +206,8 @@ async def _compute_bills(
                 "employee_category": emp_cat,
                 "from": row_start.isoformat(),
                 "to": row_end.isoformat(),
+                "from_time": row_st or a.start_time,
+                "to_time": None if clipped_end else (row_et or a.end_time),
                 "is_ongoing": not bool(a.end_date),
                 "shift": a.shift.value,
                 "shift_label": _format_shift(a.shift, a.start_time, a.end_time, a.shift_windows),

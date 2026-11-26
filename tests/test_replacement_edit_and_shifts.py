@@ -315,3 +315,85 @@ async def test_all_shift_types_duty_days_edit_and_replacement_totals(
     assert r_cust_2w.status_code == 200, r_cust_2w.text
     assert r_cust_2w.json()["data"]["days_worked"] == 2.0
     assert r_cust_2w.json()["data"]["customer_rate"] == 6000
+
+
+@pytest.mark.asyncio
+async def test_general_bill_handover_dates_times_and_days(
+    client: AsyncClient, auth_headers: dict
+):
+    from app.models.assignment import Assignment
+
+    loc_id, cust_id, emp1_id, emp2_id = await _seed_branch_and_people()
+
+    # 1. Assign emp1 ongoing from Nov 1 07:00 AM
+    r1 = await client.post(
+        "/api/v1/assignments",
+        json={
+            "customer_id": cust_id,
+            "employee_id": emp1_id,
+            "location_id": loc_id,
+            "shift": "full_24h",
+            "start_date": "2026-11-01",
+            "start_time": "07:00",
+            "end_time": None,
+            "customer_daily_rate": 1000,
+            "employee_daily_rate": 700,
+        },
+        headers=auth_headers,
+    )
+    assert r1.status_code == 201, r1.text
+    a1_id = r1.json()["data"]["id"]
+
+    # 2. Replace emp1 with emp2 effective Nov 15 07:00 AM (emp2 ongoing)
+    rep = await client.post(
+        f"/api/v1/assignments/{a1_id}/replace-staff",
+        json={
+            "new_employee_id": emp2_id,
+            "effective_date": "2026-11-15",
+            "end_date": None,
+            "shift": "full_24h",
+            "start_time": "07:00",
+            "end_time": None,
+            "reason": "Scheduled rotation",
+        },
+        headers=auth_headers,
+    )
+    assert rep.status_code == 200, rep.text
+
+    # Even if a1 had a stale days_worked in DB (e.g. 15 from old bug), General Bill must calculate 14!
+    a1_doc = await Assignment.get(a1_id)
+    a1_doc.days_worked = 15.0
+    a1_doc.customer_rate = 15000
+    await a1_doc.save()
+
+    # 3. General Bill for 1st to 15th: Nov 1 07:00 AM -> Nov 15 07:00 AM MUST be 14 days, NOT 15!
+    bill_1_15 = await client.get(
+        f"/api/v1/billing/monthly?start_date=2026-11-01&end_date=2026-11-15&customer_id={cust_id}",
+        headers=auth_headers,
+    )
+    assert bill_1_15.status_code == 200, bill_1_15.text
+    bills_15 = bill_1_15.json()["data"]["bills"]
+    assert len(bills_15) == 1
+    assert bills_15[0]["total_days"] == 14.0
+    assert bills_15[0]["total_amount"] == 14000
+    assert len(bills_15[0]["line_items"]) == 1
+    li1 = bills_15[0]["line_items"][0]
+    assert li1["from"] == "2026-11-01"
+    assert li1["to"] == "2026-11-15"
+    assert li1["from_time"] == "07:00"
+    assert li1["to_time"] == "07:00"
+    assert li1["days"] == 14.0
+
+    # 4. General Bill for full month Nov 1 to Nov 30: Staff 1 = 14 days, Staff 2 = 16 days => 30 days
+    bill_full = await client.get(
+        f"/api/v1/billing/monthly?start_date=2026-11-01&end_date=2026-11-30&customer_id={cust_id}",
+        headers=auth_headers,
+    )
+    assert bill_full.status_code == 200, bill_full.text
+    b_full = bill_full.json()["data"]["bills"][0]
+    assert b_full["total_days"] == 30.0
+    assert b_full["total_amount"] == 30000
+    assert [li["days"] for li in b_full["line_items"]] == [14.0, 16.0]
+    assert b_full["line_items"][1]["from_time"] == "07:00"
+    assert b_full["line_items"][1]["to_time"] is None
+
