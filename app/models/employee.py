@@ -8,13 +8,13 @@ used for assignments, ID cards, billing and reports.
 from __future__ import annotations
 
 import datetime as dt
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 import pymongo
 from beanie import Indexed
 from pydantic import EmailStr, Field, field_validator
 
-from app.models.base import ImageAsset, TimestampedDocument
+from app.models.base import IdentityDocument, ImageAsset, TimestampedDocument
 from app.models.enums import EmployeeStatus, Gender, StaffVerificationStatus
 
 
@@ -58,6 +58,7 @@ class Employee(TimestampedDocument):
     bank_account_number: Optional[str] = None
     bank_ifsc: Optional[str] = None
     bank_photo: Optional[ImageAsset] = None
+    documents: List[IdentityDocument] = Field(default_factory=list)
 
     # Multi-location scoping.
     location_id: Indexed(str)  # type: ignore[valid-type]

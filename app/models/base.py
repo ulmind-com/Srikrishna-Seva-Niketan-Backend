@@ -72,6 +72,14 @@ class ImageAsset(BaseModel):
         return value
 
 
+class IdentityDocument(BaseModel):
+    """A single identity / KYC document (type, number, and uploaded image/scan)."""
+
+    doc_type: str
+    doc_number: Optional[str] = None
+    file: Optional[ImageAsset] = None
+
+
 class FileAsset(BaseModel):
     """A generic Cloudinary-backed file reference (resume, document, video)."""
 

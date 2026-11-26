@@ -61,3 +61,41 @@ def item_response(
     return success_response(
         data=schema.model_validate(item).model_dump(mode="json"), message=message
     )
+
+
+def sync_identity_documents(data: dict, *, sync_kyc: bool = False) -> dict:
+    """Normalise ``documents`` array and mirror primary/Voter/PAN fields for backwards compat."""
+    if "documents" not in data or data["documents"] is None:
+        return data
+
+    cleaned = []
+    for raw in data["documents"]:
+        if not isinstance(raw, dict):
+            continue
+        doc_type = (raw.get("doc_type") or "").strip()
+        doc_num = (raw.get("doc_number") or "").strip() or None
+        file_val = raw.get("file") or None
+        if doc_type and (doc_num or file_val):
+            cleaned.append({"doc_type": doc_type, "doc_number": doc_num, "file": file_val})
+
+    data["documents"] = cleaned
+    if cleaned:
+        first = cleaned[0]
+        data.setdefault("id_proof_type", first["doc_type"])
+        data["id_proof_type"] = first["doc_type"]
+        data["id_proof_number"] = first["doc_number"]
+        data["id_proof"] = first["file"]
+    else:
+        data["id_proof_type"] = None
+        data["id_proof_number"] = None
+        data["id_proof"] = None
+
+    if sync_kyc:
+        voter = next((d for d in cleaned if "voter" in d["doc_type"].lower()), None)
+        pan = next((d for d in cleaned if "pan" in d["doc_type"].lower().split()), None)
+        data["voter_number"] = voter["doc_number"] if voter else None
+        data["voter_photo"] = voter["file"] if voter else None
+        data["pan_number"] = pan["doc_number"] if pan else None
+        data["pan_photo"] = pan["file"] if pan else None
+
+    return data

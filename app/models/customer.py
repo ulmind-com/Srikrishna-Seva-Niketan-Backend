@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import List, Optional
 
 import pymongo
 from beanie import Indexed
 from pydantic import Field
 
-from app.models.base import ImageAsset, TimestampedDocument
+from app.models.base import IdentityDocument, ImageAsset, TimestampedDocument
 from app.models.enums import CareType
 
 
@@ -31,6 +31,7 @@ class Customer(TimestampedDocument):
     id_proof: Optional[ImageAsset] = None
     id_proof_type: Optional[str] = None
     id_proof_number: Optional[str] = None
+    documents: List[IdentityDocument] = Field(default_factory=list)
 
     care_type: CareType = CareType.HOME
     service_label: Optional[str] = None  # e.g. "24 hrs Health Attendant"

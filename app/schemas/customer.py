@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import List, Optional
 
 from pydantic import BaseModel, Field
 
-from app.models.base import ImageAsset
+from app.models.base import IdentityDocument, ImageAsset
 from app.models.enums import CareType
 from app.schemas.common import IdTimestampSchema
 
@@ -21,6 +21,7 @@ class CustomerCreate(BaseModel):
     id_proof: Optional[ImageAsset] = None
     id_proof_type: Optional[str] = Field(None, max_length=40)
     id_proof_number: Optional[str] = Field(None, max_length=40)
+    documents: Optional[List[IdentityDocument]] = None
     care_type: CareType = CareType.HOME
     service_label: Optional[str] = Field(None, max_length=200)
     duration_days: Optional[int] = Field(None, ge=0)
@@ -43,6 +44,7 @@ class CustomerUpdate(BaseModel):
     id_proof: Optional[ImageAsset] = None
     id_proof_type: Optional[str] = Field(None, max_length=40)
     id_proof_number: Optional[str] = Field(None, max_length=40)
+    documents: Optional[List[IdentityDocument]] = None
     care_type: Optional[CareType] = None
     service_label: Optional[str] = Field(None, max_length=200)
     duration_days: Optional[int] = Field(None, ge=0)
@@ -66,6 +68,7 @@ class CustomerResponse(IdTimestampSchema):
     id_proof: Optional[ImageAsset] = None
     id_proof_type: Optional[str] = None
     id_proof_number: Optional[str] = None
+    documents: List[IdentityDocument] = Field(default_factory=list)
     care_type: CareType
     service_label: Optional[str] = None
     duration_days: Optional[int] = None

@@ -9,7 +9,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
 
-from app.api.helpers import item_response, paginated_response
+from app.api.helpers import item_response, paginated_response, sync_identity_documents
 from app.core.exceptions import BadRequestException
 from app.core.pagination import PaginationParams, pagination_params
 from app.core.responses import success_response
@@ -94,6 +94,7 @@ async def create_employee(
     actor: ActorContext = Depends(require_permission("employees", "create")),
 ) -> dict:
     data = payload.model_dump(exclude_unset=True)
+    sync_identity_documents(data, sync_kyc=True)
     data["location_id"] = resolve_create_location(actor, data.get("location_id"))
     data["code"] = await _unique_code()
     data.setdefault("verification_status", StaffVerificationStatus.VERIFIED.value)
@@ -110,6 +111,7 @@ async def update_employee(
     existing = await _employees.get_or_404(employee_id)
     ensure_can_access(actor, existing.location_id)
     data = payload.model_dump(exclude_unset=True)
+    sync_identity_documents(data, sync_kyc=True)
     if "location_id" in data and data["location_id"]:
         ensure_can_access(actor, data["location_id"])
     doc = await _employees.update(employee_id, data, actor)

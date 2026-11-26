@@ -8,7 +8,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
 
-from app.api.helpers import item_response, paginated_response
+from app.api.helpers import item_response, paginated_response, sync_identity_documents
 from app.core.pagination import PaginationParams, pagination_params
 from app.core.responses import success_response
 from app.dependencies.auth import ActorContext, require_permission
@@ -87,6 +87,7 @@ async def create_customer(
     actor: ActorContext = Depends(require_permission("customers", "create")),
 ) -> dict:
     data = payload.model_dump(exclude_unset=True)
+    sync_identity_documents(data)
     data["location_id"] = resolve_create_location(actor, data.get("location_id"))
     data["code"] = await _unique_code()
     await _ensure_coords(data)
@@ -103,6 +104,7 @@ async def update_customer(
     existing = await _customers.get_or_404(customer_id)
     ensure_can_access(actor, existing.location_id)
     data = payload.model_dump(exclude_unset=True)
+    sync_identity_documents(data)
     if "location_id" in data and data["location_id"]:
         ensure_can_access(actor, data["location_id"])
     # Re-geocode only when the address changed and no explicit pin was supplied.

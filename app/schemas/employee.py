@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import datetime as dt
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
-from app.models.base import ImageAsset
+from app.models.base import IdentityDocument, ImageAsset
 from app.models.enums import EmployeeStatus, Gender, StaffVerificationStatus
 from app.schemas.common import IdTimestampSchema
 
@@ -35,6 +35,7 @@ class EmployeeCreate(BaseModel):
     bank_account_number: Optional[str] = Field(None, max_length=40)
     bank_ifsc: Optional[str] = Field(None, max_length=20)
     bank_photo: Optional[ImageAsset] = None
+    documents: Optional[List[IdentityDocument]] = None
     location_id: Optional[str] = None  # required for unscoped users; defaulted for managers
     status: EmployeeStatus = EmployeeStatus.AVAILABLE
     rating: float = Field(5.0, ge=1.0, le=5.0)
@@ -137,6 +138,7 @@ class EmployeeUpdate(BaseModel):
     bank_account_number: Optional[str] = Field(None, max_length=40)
     bank_ifsc: Optional[str] = Field(None, max_length=20)
     bank_photo: Optional[ImageAsset] = None
+    documents: Optional[List[IdentityDocument]] = None
     location_id: Optional[str] = None
     status: Optional[EmployeeStatus] = None
     rating: Optional[float] = Field(None, ge=1.0, le=5.0)
@@ -240,6 +242,7 @@ class EmployeeResponse(IdTimestampSchema):
     bank_account_number: Optional[str] = None
     bank_ifsc: Optional[str] = None
     bank_photo: Optional[ImageAsset] = None
+    documents: List[IdentityDocument] = Field(default_factory=list)
     location_id: str
     status: EmployeeStatus
     rating: float
