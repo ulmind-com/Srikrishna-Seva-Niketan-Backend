@@ -93,4 +93,6 @@ async def delete_payment(
     existing = await _payments.get_or_404(payment_id)
     ensure_can_access(actor, existing.location_id)
     await _payments.delete(payment_id, actor)
+    from app.services.dashboard_service import invalidate_dashboard_cache
+    invalidate_dashboard_cache()
     return success_response(message="Payment deleted")

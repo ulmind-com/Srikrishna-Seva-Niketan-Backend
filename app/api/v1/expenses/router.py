@@ -84,4 +84,6 @@ async def delete_expense(
     existing = await _expenses.get_or_404(expense_id)
     ensure_can_access(actor, existing.location_id)
     await _expenses.delete(expense_id, actor)
+    from app.services.dashboard_service import invalidate_dashboard_cache
+    invalidate_dashboard_cache()
     return success_response(message="Expense deleted")

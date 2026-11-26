@@ -1191,33 +1191,11 @@ async def delete_assignment(
     existing = await _assignments.get_or_404(assignment_id)
     ensure_can_access(actor, existing.location_id)
 
-    # 1. Cascade delete all attendance records tied to this assignment
-    try:
-        from app.models.attendance import AttendanceRecord
-        await AttendanceRecord.get_motor_collection().delete_many({"assignment_id": assignment_id})
-    except Exception as e:
-        logger.warning("Could not cascade delete attendance for assignment %s: %s", assignment_id, e)
-
-    # 2. Cascade delete payments tied to this assignment
-    try:
-        from app.models.finance import Payment
-        await Payment.get_motor_collection().delete_many({"assignment_id": assignment_id})
-    except Exception as e:
-        logger.warning("Could not cascade delete payments for assignment %s: %s", assignment_id, e)
-
-    # 3. Delete assignment
     await _assignments.delete(assignment_id, actor)
 
-    # 4. Check if staff has any remaining active duties; if not, mark AVAILABLE
-    remaining_active = await Assignment.find_one({
-        "employee_id": existing.employee_id,
-        "status": {"$in": [AssignmentStatus.SCHEDULED.value, AssignmentStatus.ACTIVE.value]},
-    })
-    if not remaining_active:
-        await _set_employee_status(existing.employee_id, EmployeeStatus.AVAILABLE)
+    from app.services.cascade_delete import cascade_delete_assignment
 
-    from app.services.dashboard_service import invalidate_dashboard_cache
-    invalidate_dashboard_cache()
+    await cascade_delete_assignment(assignment_id, existing.employee_id)
     return success_response(message="Assignment deleted and records cleaned up")
 
 

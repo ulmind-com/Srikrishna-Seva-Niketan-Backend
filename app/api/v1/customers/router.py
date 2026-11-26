@@ -121,4 +121,8 @@ async def delete_customer(
     existing = await _customers.get_or_404(customer_id)
     ensure_can_access(actor, existing.location_id)
     await _customers.delete(customer_id, actor)
-    return success_response(message="Customer deleted")
+
+    from app.services.cascade_delete import cascade_delete_customer
+
+    await cascade_delete_customer(customer_id)
+    return success_response(message="Customer and related records deleted")

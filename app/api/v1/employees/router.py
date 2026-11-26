@@ -124,7 +124,11 @@ async def delete_employee(
     existing = await _employees.get_or_404(employee_id)
     ensure_can_access(actor, existing.location_id)
     await _employees.delete(employee_id, actor)
-    return success_response(message="Employee deleted")
+
+    from app.services.cascade_delete import cascade_delete_employee
+
+    await cascade_delete_employee(employee_id)
+    return success_response(message="Employee and related records deleted")
 
 
 # ---------------------------------------------------------------------------
