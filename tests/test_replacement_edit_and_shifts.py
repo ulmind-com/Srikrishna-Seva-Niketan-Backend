@@ -431,7 +431,7 @@ async def test_contract_amount_preserved_while_daily_bill_and_payout_calculate(
 ):
     loc_id, cust_id, emp1_id, emp2_id = await _seed_branch_and_people()
 
-    # 1. Create ongoing assignment with contract_amount=14000, daily customer=500, daily staff=300
+    # 1. Create ongoing assignment with contract_amount=14000, daily customer=500, daily staff=300, daily expense=50
     res = await client.post(
         "/api/v1/assignments",
         json={
@@ -444,16 +444,19 @@ async def test_contract_amount_preserved_while_daily_bill_and_payout_calculate(
             "contract_amount": 14000,
             "customer_daily_rate": 500,
             "employee_daily_rate": 300,
+            "daily_other_expense": 50,
         },
         headers=auth_headers,
     )
     assert res.status_code == 201, res.text
     a1 = res.json()["data"]
     assert a1["contract_amount"] == 14000
+    assert a1["daily_other_expense"] == 50
     assert a1["customer_rate"] is None
     assert a1["employee_payout"] is None
+    assert a1["other_expense"] is None
 
-    # 2. Replace on Nov 15 07:00 -> 14 days => Bill=7000, Pay=4200, Profit=2800, Contract STILL 14000!
+    # 2. Replace on Nov 15 07:00 -> 14 days => Bill=7000, Pay=4200, Exp=700 (50x14), Profit=2100, Contract STILL 14000!
     rep = await client.post(
         f"/api/v1/assignments/{a1['id']}/replace-staff",
         json={
@@ -473,9 +476,12 @@ async def test_contract_amount_preserved_while_daily_bill_and_payout_calculate(
     assert prev_a["contract_amount"] == 14000
     assert prev_a["customer_rate"] == 7000
     assert prev_a["employee_payout"] == 4200
+    assert prev_a["daily_other_expense"] == 50
+    assert prev_a["other_expense"] == 700
     assert new_a["contract_amount"] == 14000
+    assert new_a["daily_other_expense"] == 50
 
-    # 3. Edit predecessor daily rate/end_date -> contract_amount remains 14000!
+    # 3. Edit predecessor daily rate/end_date -> contract_amount remains 14000, Exp=750 (50x15)!
     upd = await client.put(
         f"/api/v1/assignments/{a1['id']}",
         json={"end_date": "2026-11-16", "end_time": "07:00"},
@@ -487,4 +493,5 @@ async def test_contract_amount_preserved_while_daily_bill_and_payout_calculate(
     assert a1_upd["contract_amount"] == 14000
     assert a1_upd["customer_rate"] == 7500
     assert a1_upd["employee_payout"] == 4500
+    assert a1_upd["other_expense"] == 750
 

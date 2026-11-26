@@ -88,6 +88,7 @@ class Assignment(TimestampedDocument):
     # derived as daily_rate × total_days so all existing reports keep working.
     customer_daily_rate: Optional[int] = None  # charged to the customer per day
     employee_daily_rate: Optional[int] = None  # paid to the staff member per day
+    daily_other_expense: Optional[int] = None  # daily misc cost (travel, kit…) per day
 
     # Agreed total contract / package amount entered by admin (kept intact across daily billing).
     contract_amount: Optional[int] = None

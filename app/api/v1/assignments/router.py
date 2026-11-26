@@ -133,6 +133,8 @@ def _derive_amounts(
             data.setdefault("days_worked", None)
             data.setdefault("customer_rate", None)
             data.setdefault("employee_payout", None)
+            if data.get("daily_other_expense", existing.daily_other_expense) is not None:
+                data.setdefault("other_expense", None)
         return data
 
     if days_worked is not None and days_worked >= 0:
@@ -163,6 +165,10 @@ def _derive_amounts(
         return data
     cdr = data.get("customer_daily_rate", existing_cdr)
     edr = data.get("employee_daily_rate", existing_edr)
+    doexp = data.get(
+        "daily_other_expense",
+        existing.daily_other_expense if existing else None,
+    )
     contract_amt = data.get(
         "contract_amount",
         existing.contract_amount if existing else None,
@@ -173,6 +179,8 @@ def _derive_amounts(
         data["customer_rate"] = int(contract_amt)
     if edr is not None:
         data["employee_payout"] = int(round(edr * total_days))
+    if doexp is not None:
+        data["other_expense"] = int(round(doexp * total_days))
     return data
 
 
@@ -196,6 +204,8 @@ def _recompute_assignment_totals(asg: Assignment) -> float:
         asg.customer_rate = int(round(asg.customer_daily_rate * duty_days))
     if asg.employee_daily_rate is not None:
         asg.employee_payout = int(round(asg.employee_daily_rate * duty_days))
+    if asg.daily_other_expense is not None:
+        asg.other_expense = int(round(asg.daily_other_expense * duty_days))
     return duty_days
 
 
@@ -261,6 +271,8 @@ async def _sync_replacement_chain(
                     pred.customer_rate = 0
                 if pred.employee_daily_rate is not None:
                     pred.employee_payout = 0
+                if pred.daily_other_expense is not None:
+                    pred.other_expense = 0
             else:
                 if pred.status == AssignmentStatus.CANCELLED:
                     pred.status = AssignmentStatus.REPLACED
@@ -915,6 +927,7 @@ class ReplaceStaffRequest(BaseModel):
     reason: Optional[str] = None
     customer_daily_rate: Optional[int] = None
     employee_daily_rate: Optional[int] = None
+    daily_other_expense: Optional[int] = None
     contract_amount: Optional[int] = None
     notes: Optional[str] = None
 
@@ -931,6 +944,7 @@ class BatchReplaceItem(BaseModel):
     reason: Optional[str] = None
     customer_daily_rate: Optional[int] = None
     employee_daily_rate: Optional[int] = None
+    daily_other_expense: Optional[int] = None
     contract_amount: Optional[int] = None
     notes: Optional[str] = None
 
@@ -946,6 +960,7 @@ class MultiStaffItem(BaseModel):
     end_time: Optional[str] = None
     customer_daily_rate: Optional[int] = None
     employee_daily_rate: Optional[int] = None
+    daily_other_expense: Optional[int] = None
     contract_amount: Optional[int] = None
     notes: Optional[str] = None
 
@@ -964,6 +979,7 @@ class MultiStaffAssignmentRequest(BaseModel):
     duration_days: Optional[int] = None
     customer_daily_rate: Optional[int] = None
     employee_daily_rate: Optional[int] = None
+    daily_other_expense: Optional[int] = None
     contract_amount: Optional[int] = None
     payment_type: Optional[str] = "prepaid"
     notes: Optional[str] = None
@@ -1063,6 +1079,7 @@ async def _perform_staff_replacement(
         "end_date": target_end_date,
         "customer_daily_rate": cdr,
         "employee_daily_rate": edr,
+        "daily_other_expense": existing.daily_other_expense,
         "contract_amount": existing.contract_amount,
         "status": AssignmentStatus.SCHEDULED,
         "acceptance_status": AcceptanceStatus.PENDING,
@@ -1265,6 +1282,7 @@ async def multi_staff_assign(
             "end_date": calculated_end_date,
             "customer_daily_rate": cdr,
             "employee_daily_rate": edr,
+            "daily_other_expense": payload.daily_other_expense,
             "contract_amount": staff.contract_amount if staff.contract_amount is not None else payload.contract_amount,
             "status": AssignmentStatus.SCHEDULED,
             "acceptance_status": AcceptanceStatus.PENDING,

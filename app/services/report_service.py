@@ -113,6 +113,9 @@ async def profit_loss(
                     "_eff_payout": {
                         "$ifNull": ["$employee_payout", {"$multiply": [{"$ifNull": ["$employee_daily_rate", 0]}, "$_eff_days"]}]
                     },
+                    "_eff_other": {
+                        "$ifNull": ["$other_expense", {"$multiply": [{"$ifNull": ["$daily_other_expense", 0]}, "$_eff_days"]}]
+                    },
                 }
             },
             {
@@ -123,7 +126,7 @@ async def profit_loss(
                                 "_id": None,
                                 "revenue": {"$sum": {"$ifNull": ["$_eff_bill", 0]}},
                                 "staff_payout": {"$sum": {"$ifNull": ["$_eff_payout", 0]}},
-                                "assignment_other": {"$sum": {"$ifNull": ["$other_expense", 0]}},
+                                "assignment_other": {"$sum": {"$ifNull": ["$_eff_other", 0]}},
                                 "count": {"$sum": 1},
                             }
                         }
@@ -508,7 +511,7 @@ async def duty_report(
         # it from the per-day rate × elapsed days so bill/pay are never ₹0.
         bill = a.customer_rate if a.customer_rate is not None else int(round((a.customer_daily_rate or 0) * eff_days))
         payout = a.employee_payout if a.employee_payout is not None else int(round((a.employee_daily_rate or 0) * eff_days))
-        exp = a.other_expense or 0
+        exp = a.other_expense if a.other_expense is not None else int(round((a.daily_other_expense or 0) * eff_days))
         profit = bill - payout - exp
         margin = round(profit / bill * 100) if bill > 0 else 0
 

@@ -246,6 +246,7 @@ class AssignmentCreate(BaseModel):
     # Per-day rates (preferred). Stored totals are derived = daily × total_days.
     customer_daily_rate: Optional[int] = Field(None, ge=0)
     employee_daily_rate: Optional[int] = Field(None, ge=0)
+    daily_other_expense: Optional[int] = Field(None, ge=0)
     contract_amount: Optional[int] = Field(None, ge=0)
     customer_rate: Optional[int] = Field(None, ge=0)
     employee_payout: Optional[int] = Field(None, ge=0)
@@ -264,6 +265,7 @@ class AssignmentCreate(BaseModel):
         "duration_days",
         "customer_daily_rate",
         "employee_daily_rate",
+        "daily_other_expense",
         "contract_amount",
         "customer_rate",
         "employee_payout",
@@ -306,6 +308,7 @@ class AssignmentUpdate(BaseModel):
     work_completed_at: Optional[dt.datetime] = None
     customer_daily_rate: Optional[int] = Field(None, ge=0)
     employee_daily_rate: Optional[int] = Field(None, ge=0)
+    daily_other_expense: Optional[int] = Field(None, ge=0)
     contract_amount: Optional[int] = Field(None, ge=0)
     customer_rate: Optional[int] = Field(None, ge=0)
     employee_payout: Optional[int] = Field(None, ge=0)
@@ -324,6 +327,7 @@ class AssignmentUpdate(BaseModel):
         "duration_days",
         "customer_daily_rate",
         "employee_daily_rate",
+        "daily_other_expense",
         "contract_amount",
         "customer_rate",
         "employee_payout",
@@ -375,6 +379,7 @@ class AssignmentResponse(IdTimestampSchema):
     dest_lng: Optional[float] = None
     customer_daily_rate: Optional[int] = None
     employee_daily_rate: Optional[int] = None
+    daily_other_expense: Optional[int] = None
     contract_amount: Optional[int] = None
     customer_rate: Optional[int] = None
     employee_payout: Optional[int] = None
@@ -467,6 +472,8 @@ class AssignmentResponse(IdTimestampSchema):
                     self.customer_rate = int(round(self.customer_daily_rate * duty_days))
                 if self.employee_daily_rate is not None:
                     self.employee_payout = int(round(self.employee_daily_rate * duty_days))
+                if self.daily_other_expense is not None:
+                    self.other_expense = int(round(self.daily_other_expense * duty_days))
         return self
 
 
