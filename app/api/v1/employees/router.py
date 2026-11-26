@@ -6,6 +6,7 @@ import datetime as dt
 import secrets
 import string
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Query
 
@@ -98,8 +99,12 @@ async def create_employee(
     data["location_id"] = resolve_create_location(actor, data.get("location_id"))
     data["code"] = await _unique_code()
     data.setdefault("verification_status", StaffVerificationStatus.VERIFIED.value)
+    if data.get("verification_status") == StaffVerificationStatus.VERIFIED.value:
+        if not data.get("verified_at"):
+            data["verified_at"] = dt.datetime.now(dt.timezone.utc)
+        if not data.get("verified_by"):
+            data["verified_by"] = actor.user_id
     if not data.get("join_date"):
-        from zoneinfo import ZoneInfo
         data["join_date"] = dt.datetime.now(ZoneInfo("Asia/Kolkata")).date()
     doc = await _employees.create(data, actor)
     return item_response(EmployeeResponse, doc, "Employee registered")
@@ -115,6 +120,12 @@ async def update_employee(
     ensure_can_access(actor, existing.location_id)
     data = payload.model_dump(exclude_unset=True)
     sync_identity_documents(data, sync_kyc=True)
+    if (
+        data.get("verification_status") == StaffVerificationStatus.VERIFIED.value
+        and existing.verified_at is None
+    ):
+        data.setdefault("verified_at", dt.datetime.now(dt.timezone.utc))
+        data.setdefault("verified_by", actor.user_id)
     if "location_id" in data and data["location_id"]:
         ensure_can_access(actor, data["location_id"])
     doc = await _employees.update(employee_id, data, actor)
@@ -175,7 +186,7 @@ async def verify_employee(
     if not doc.designation:
         doc.designation = doc.category.replace("_", " ").title()
     if not doc.join_date:
-        doc.join_date = dt.date.today()
+        doc.join_date = dt.datetime.now(ZoneInfo("Asia/Kolkata")).date()
 
     doc.verification_status = StaffVerificationStatus.VERIFIED
     doc.verified_at = dt.datetime.now(dt.timezone.utc)
