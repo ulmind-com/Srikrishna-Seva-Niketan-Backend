@@ -48,6 +48,7 @@ from app.services.email_service import email_service
 from app.services.geo_service import geo_service
 from app.services.notification_service import notification_service
 from app.services.payroll_service import sync_assignment_attendance
+from app.utils.bill_number import format_bill_no, next_sequential_bill_no
 from app.utils.ist_time import now_ist, today_ist
 
 logger = logging.getLogger(__name__)
@@ -771,28 +772,15 @@ async def update_assignment(
     return item_response(AssignmentResponse, doc, "Assignment updated")
 
 
-# First digital bill number. Kept well clear of the low numbers on the paper
-# bill pad so the two series never collide.
-_BILL_NO_BASE = 1000
-
-
 async def _next_bill_no() -> int:
-    """Atomically allocate the next sequential customer-bill number."""
-    from pymongo import ReturnDocument
-
+    """Atomically allocate the next sequential customer-bill number (001, 002, ...)."""
     try:
         from app.database.connection import get_database
         db = get_database()
     except Exception:
         db = Assignment.get_motor_collection().database
 
-    res = await db["counters"].find_one_and_update(
-        {"_id": "assignment_bill_no"},
-        {"$inc": {"seq": 1}},
-        upsert=True,
-        return_document=ReturnDocument.AFTER,
-    )
-    return _BILL_NO_BASE + int(res["seq"])
+    return await next_sequential_bill_no(db, "assignment")
 
 
 @router.post("/{assignment_id}/issue-bill", summary="Allocate this engagement's bill number")
@@ -818,7 +806,7 @@ async def issue_bill(
         doc.bill_no = await _next_bill_no()
         doc.touch()
         await doc.save()
-    return success_response(data={"bill_no": doc.bill_no})
+    return success_response(data={"bill_no": doc.bill_no, "bill_no_formatted": format_bill_no(doc.bill_no)})
 
 
 class AdminCompleteAssignmentRequest(BaseModel):

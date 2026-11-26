@@ -26,10 +26,10 @@ from app.models.employee import Employee
 from app.models.enums import AssignmentStatus, ShiftType
 from app.models.location import Location
 from app.schemas.assignment import _format_shift, calculate_duty_days
+from app.utils.bill_number import format_bill_no, next_sequential_bill_no
+from app.utils.ist_time import today_ist
 
 router = APIRouter(prefix="/billing", tags=["Billing"])
-
-_MONTHLY_BILL_NO_BASE = 1000
 
 
 def _month_bounds(month: str) -> tuple[dt.date, dt.date]:
@@ -259,6 +259,7 @@ async def _compute_bills(
                     break
         if mb:
             g["bill_no"] = mb.bill_no
+        g["bill_no_formatted"] = format_bill_no(g.get("bill_no"))
 
     result.sort(key=lambda g: (g["customer_name"] or "").lower())
     return result
@@ -284,10 +285,22 @@ async def monthly_bills(
         m_start, m_end = _month_bounds(month)
         label = month
     else:
-        today = dt.date.today()
+        today = today_ist()
         month = f"{today.year:04d}-{today.month:02d}"
         m_start, m_end = _month_bounds(month)
         label = month
+
+    # Ensure legacy >=1000 bill numbers (if any exist in DB before v2 migration) are cleared before read
+    try:
+        from app.database.connection import get_database
+        _db = get_database()
+    except Exception:
+        _db = MonthlyBill.get_motor_collection().database
+    if await _db["counters"].find_one({"_id": "monthly_bill_seq_v2"}) is None:
+        if await _db["counters"].find_one({"_id": "monthly_bill_no"}) is not None:
+            await _db["monthly_bills"].delete_many({"bill_no": {"$gte": 1000}})
+            await _db["assignments"].update_many({"bill_no": {"$gte": 1000}}, {"$set": {"bill_no": None}})
+            await _db["counters"].update_one({"_id": "monthly_bill_seq_v2"}, {"$setOnInsert": {"seq": 0}}, upsert=True)
 
     bills = await _compute_bills(actor, m_start, m_end, location_id, customer_id, month)
     totals = {
@@ -306,21 +319,13 @@ async def monthly_bills(
 
 
 async def _next_monthly_bill_no() -> int:
-    from pymongo import ReturnDocument
-
     try:
         from app.database.connection import get_database
         db = get_database()
     except Exception:
         db = MonthlyBill.get_motor_collection().database
 
-    res = await db["counters"].find_one_and_update(
-        {"_id": "monthly_bill_no"},
-        {"$inc": {"seq": 1}},
-        upsert=True,
-        return_document=ReturnDocument.AFTER,
-    )
-    return _MONTHLY_BILL_NO_BASE + int(res["seq"])
+    return await next_sequential_bill_no(db, "monthly")
 
 
 class IssueMonthlyBillRequest(BaseModel):
@@ -350,7 +355,7 @@ async def issue_monthly_bill(
             {"key": f"{payload.employee_id}:{payload.customer_id}:{period_key}"}
         )
     if existing is not None:
-        return success_response(data={"bill_no": existing.bill_no})
+        return success_response(data={"bill_no": existing.bill_no, "bill_no_formatted": format_bill_no(existing.bill_no)})
 
     if payload.start_date and payload.end_date:
         m_start = payload.start_date
@@ -358,7 +363,7 @@ async def issue_monthly_bill(
     elif payload.month:
         m_start, m_end = _month_bounds(payload.month)
     else:
-        today = dt.date.today()
+        today = today_ist()
         m_start, m_end = _month_bounds(f"{today.year:04d}-{today.month:02d}")
 
     # Recompute the group so the snapshot + scope check are honest.
@@ -379,4 +384,4 @@ async def issue_monthly_bill(
         total_amount=group.get("total_amount"),
     )
     await mb.insert()
-    return success_response(data={"bill_no": bill_no})
+    return success_response(data={"bill_no": bill_no, "bill_no_formatted": format_bill_no(bill_no)})

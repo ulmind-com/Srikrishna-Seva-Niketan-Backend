@@ -140,7 +140,8 @@ async def test_replace_staff_and_consolidated_monthly_bill(
     )
     assert issue_res.status_code == 200
     issued_no = issue_res.json()["data"]["bill_no"]
-    assert issued_no >= 1000
+    assert issued_no == 1
+    assert issue_res.json()["data"]["bill_no_formatted"] == "001"
 
     # Re-calling issue returns same bill_no (idempotent)
     issue_res_repeat = await client.post(

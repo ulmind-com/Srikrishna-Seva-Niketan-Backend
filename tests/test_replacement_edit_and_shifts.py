@@ -422,7 +422,47 @@ async def test_general_bill_handover_dates_times_and_days(
 
     issue_done = await client.post(f"/api/v1/assignments/{a2_id}/issue-bill", headers=auth_headers)
     assert issue_done.status_code == 200, issue_done.text
-    assert issue_done.json()["data"]["bill_no"] >= 1000
+    assert issue_done.json()["data"]["bill_no"] == 1
+    assert issue_done.json()["data"]["bill_no_formatted"] == "001"
+
+    # Sequential general bills: 1st -> 001, 2nd -> 002, repeat on 1st -> 001
+    gb1 = await client.post(
+        "/api/v1/billing/monthly/issue",
+        json={"customer_id": cust_id, "start_date": "2026-11-01", "end_date": "2026-11-30"},
+        headers=auth_headers,
+    )
+    assert gb1.status_code == 200, gb1.text
+    assert gb1.json()["data"]["bill_no"] == 1
+    assert gb1.json()["data"]["bill_no_formatted"] == "001"
+
+    # Seed second customer + ended assignment for sequential 002 test
+    from app.models.customer import Customer as _Cust
+    cust2 = _Cust(name="Second Client", code="CUST-902", phone="9876500099", location_id=loc_id, billing_rate=1000)
+    await cust2.insert()
+    r2 = await client.post(
+        "/api/v1/assignments",
+        json={
+            "customer_id": str(cust2.id),
+            "employee_id": emp1_id,
+            "location_id": loc_id,
+            "shift": "day",
+            "start_date": "2026-11-20",
+            "end_date": "2026-11-22",
+            "start_time": "08:00",
+            "end_time": "20:00",
+            "customer_daily_rate": 1000,
+        },
+        headers=auth_headers,
+    )
+    assert r2.status_code == 201, r2.text
+    gb2 = await client.post(
+        "/api/v1/billing/monthly/issue",
+        json={"customer_id": str(cust2.id), "start_date": "2026-11-01", "end_date": "2026-11-30"},
+        headers=auth_headers,
+    )
+    assert gb2.status_code == 200, gb2.text
+    assert gb2.json()["data"]["bill_no"] == 2
+    assert gb2.json()["data"]["bill_no_formatted"] == "002"
 
 
 @pytest.mark.asyncio
