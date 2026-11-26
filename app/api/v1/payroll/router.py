@@ -379,12 +379,15 @@ async def get_payslip(
     if employee.verification_status != StaffVerificationStatus.VERIFIED:
         raise BadRequestException("Only verified staff members have payslips. Please verify staff first.")
 
+    is_custom = bool(start_date and end_date)
     if start_date and end_date:
         if end_date < start_date:
             raise BadRequestException("End date cannot be earlier than start date")
         first = start_date
         last = end_date
         days = (end_date - start_date).days + 1
+    elif start_date or end_date:
+        raise BadRequestException("Provide both start_date and end_date")
     else:
         first, last, days = _month_bounds(month)
 
@@ -392,17 +395,32 @@ async def get_payslip(
     await payroll_service.materialize_from_assignments(
         first, last, [employee.location_id] if employee.location_id else None
     )
-    data = await payroll_service.build_payslip(employee, first, last, days)
+    data = await payroll_service.build_payslip(
+        employee, first, last, days, is_custom_range=is_custom
+    )
     return success_response(data=data)
 
 
-@router.get("/payslips", summary="Monthly payroll run (all staff)")
+@router.get("/payslips", summary="Payroll run (all staff, month or custom date range)")
 async def get_payroll_run(
     month: Optional[str] = Query(None, description="YYYY-MM; defaults to this month."),
+    start_date: Optional[dt.date] = Query(None, description="Custom start date (inclusive)"),
+    end_date: Optional[dt.date] = Query(None, description="Custom end date (inclusive)"),
     location_id: Optional[str] = Query(None),
     actor: ActorContext = Depends(require_permission("payroll", "view")),
 ) -> dict:
-    first, last, days = _month_bounds(month)
+    is_custom = bool(start_date and end_date)
+    if start_date and end_date:
+        if end_date < start_date:
+            raise BadRequestException("End date cannot be earlier than start date")
+        first = start_date
+        last = end_date
+        days = (end_date - start_date).days + 1
+    elif start_date or end_date:
+        raise BadRequestException("Provide both start_date and end_date")
+    else:
+        first, last, days = _month_bounds(month)
+
     if actor.is_scoped:
         location_ids = actor.location_ids
     elif location_id:
@@ -411,7 +429,9 @@ async def get_payroll_run(
         location_ids = None
     # Auto-fill present days from duties across the run's scope before reading.
     await payroll_service.materialize_from_assignments(first, last, location_ids)
-    data = await payroll_service.payroll_run(first, last, days, location_ids)
+    data = await payroll_service.payroll_run(
+        first, last, days, location_ids, is_custom_range=is_custom
+    )
     return success_response(data=data)
 
 

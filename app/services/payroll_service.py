@@ -414,9 +414,13 @@ def _summarize(records: Sequence[AttendanceRecord], fallback_rate: Optional[int]
 
 
 async def build_payslip(
-    employee: Employee, first: dt.date, last: dt.date, days: int
+    employee: Employee,
+    first: dt.date,
+    last: dt.date,
+    days: int,
+    is_custom_range: bool = False,
 ) -> dict:
-    """One employee's full monthly payslip: day-by-day calendar plus totals."""
+    """One employee's payslip for [first, last] (month or custom date range)."""
     emp_id = str(employee.id)
     records = await _fetch_records(first, last, {"employee_id": emp_id})
     by_date: Dict[dt.date, List[AttendanceRecord]] = {}
@@ -519,7 +523,11 @@ async def build_payslip(
     paid_amount = sum(
         sp.amount
         for sp in sp_docs
-        if (sp.month == eff_month if sp.month else (first <= sp.date <= last))
+        if (
+            (first <= sp.date <= last)
+            if is_custom_range or not sp.month
+            else (sp.month == eff_month)
+        )
     )
     summary["paid_amount"] = paid_amount
     summary["remaining_amount"] = max(0, summary["net_payable"] - paid_amount)
@@ -552,8 +560,9 @@ async def payroll_run(
     last: dt.date,
     days: int,
     location_ids: Optional[List[str]] = None,
+    is_custom_range: bool = False,
 ) -> dict:
-    """Summary line for every active employee for the month (the payroll run).
+    """Summary line for every active employee for [first, last] (month or custom date range).
 
     ``location_ids`` restricts to those branches (branch-scoped managers); pass
     ``None`` for an unscoped, firm-wide run.
@@ -584,7 +593,12 @@ async def payroll_run(
     all_sp = await StaffPayment.find(sp_filter).to_list()
     sp_by_emp: Dict[str, int] = {}
     for sp in all_sp:
-        if sp.month == eff_month if sp.month else (first <= sp.date <= last):
+        matches = (
+            (first <= sp.date <= last)
+            if is_custom_range or not sp.month
+            else (sp.month == eff_month)
+        )
+        if matches:
             sp_by_emp[sp.employee_id] = sp_by_emp.get(sp.employee_id, 0) + sp.amount
 
     rows: List[dict] = []

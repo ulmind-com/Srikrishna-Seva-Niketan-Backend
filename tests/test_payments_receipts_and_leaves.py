@@ -273,3 +273,30 @@ async def test_leave_from_assignment_deducts_and_syncs_attendance_and_payslip(
     assert slip["summary"]["present_days"] == 8
     assert slip["summary"]["off_days"] == 2
     assert slip["summary"]["gross_pay"] == 4000
+
+    # Custom bank-statement date range: Oct 1 .. Oct 3 (before leave on Oct 4-5)
+    run_custom = (
+        await client.get(
+            "/api/v1/payroll/payslips?start_date=2026-10-01&end_date=2026-10-03",
+            headers=auth_headers,
+        )
+    ).json()["data"]
+    assert run_custom["period"]["start"] == "2026-10-01"
+    assert run_custom["period"]["end"] == "2026-10-03"
+    assert run_custom["period"]["days_in_month"] == 3
+    row = next(r for r in run_custom["rows"] if r["employee_id"] == str(e1.id))
+    assert row["present_days"] == 3
+    assert row["gross_pay"] == 1500
+
+    slip_custom = (
+        await client.get(
+            f"/api/v1/payroll/payslip?employee_id={e1.id}&start_date=2026-10-01&end_date=2026-10-03",
+            headers=auth_headers,
+        )
+    ).json()["data"]
+    assert slip_custom["period"]["start"] == "2026-10-01"
+    assert slip_custom["period"]["end"] == "2026-10-03"
+    assert slip_custom["period"]["days_in_month"] == 3
+    assert slip_custom["summary"]["present_days"] == 3
+    assert slip_custom["summary"]["gross_pay"] == 1500
+    assert len(slip_custom["days"]) == 3
