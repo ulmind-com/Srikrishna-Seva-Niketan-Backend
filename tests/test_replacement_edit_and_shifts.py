@@ -424,3 +424,67 @@ async def test_general_bill_handover_dates_times_and_days(
     assert issue_done.status_code == 200, issue_done.text
     assert issue_done.json()["data"]["bill_no"] >= 1000
 
+
+@pytest.mark.asyncio
+async def test_contract_amount_preserved_while_daily_bill_and_payout_calculate(
+    client: AsyncClient, auth_headers: dict
+):
+    loc_id, cust_id, emp1_id, emp2_id = await _seed_branch_and_people()
+
+    # 1. Create ongoing assignment with contract_amount=14000, daily customer=500, daily staff=300
+    res = await client.post(
+        "/api/v1/assignments",
+        json={
+            "customer_id": cust_id,
+            "employee_id": emp1_id,
+            "location_id": loc_id,
+            "shift": "full_24h",
+            "start_date": "2026-11-01",
+            "start_time": "07:00",
+            "contract_amount": 14000,
+            "customer_daily_rate": 500,
+            "employee_daily_rate": 300,
+        },
+        headers=auth_headers,
+    )
+    assert res.status_code == 201, res.text
+    a1 = res.json()["data"]
+    assert a1["contract_amount"] == 14000
+    assert a1["customer_rate"] is None
+    assert a1["employee_payout"] is None
+
+    # 2. Replace on Nov 15 07:00 -> 14 days => Bill=7000, Pay=4200, Profit=2800, Contract STILL 14000!
+    rep = await client.post(
+        f"/api/v1/assignments/{a1['id']}/replace-staff",
+        json={
+            "new_employee_id": emp2_id,
+            "effective_date": "2026-11-15",
+            "shift": "full_24h",
+            "start_time": "07:00",
+            "reason": "Handover",
+        },
+        headers=auth_headers,
+    )
+    assert rep.status_code == 200, rep.text
+    prev_a = rep.json()["data"]["previous_assignment"]
+    new_a = rep.json()["data"]["new_assignment"]
+
+    assert prev_a["days_worked"] == 14.0
+    assert prev_a["contract_amount"] == 14000
+    assert prev_a["customer_rate"] == 7000
+    assert prev_a["employee_payout"] == 4200
+    assert new_a["contract_amount"] == 14000
+
+    # 3. Edit predecessor daily rate/end_date -> contract_amount remains 14000!
+    upd = await client.put(
+        f"/api/v1/assignments/{a1['id']}",
+        json={"end_date": "2026-11-16", "end_time": "07:00"},
+        headers=auth_headers,
+    )
+    assert upd.status_code == 200, upd.text
+    a1_upd = upd.json()["data"]
+    assert a1_upd["days_worked"] == 15.0
+    assert a1_upd["contract_amount"] == 14000
+    assert a1_upd["customer_rate"] == 7500
+    assert a1_upd["employee_payout"] == 4500
+

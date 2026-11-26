@@ -246,6 +246,7 @@ class AssignmentCreate(BaseModel):
     # Per-day rates (preferred). Stored totals are derived = daily × total_days.
     customer_daily_rate: Optional[int] = Field(None, ge=0)
     employee_daily_rate: Optional[int] = Field(None, ge=0)
+    contract_amount: Optional[int] = Field(None, ge=0)
     customer_rate: Optional[int] = Field(None, ge=0)
     employee_payout: Optional[int] = Field(None, ge=0)
     other_expense: Optional[int] = Field(None, ge=0)
@@ -263,6 +264,7 @@ class AssignmentCreate(BaseModel):
         "duration_days",
         "customer_daily_rate",
         "employee_daily_rate",
+        "contract_amount",
         "customer_rate",
         "employee_payout",
         "other_expense",
@@ -304,6 +306,7 @@ class AssignmentUpdate(BaseModel):
     work_completed_at: Optional[dt.datetime] = None
     customer_daily_rate: Optional[int] = Field(None, ge=0)
     employee_daily_rate: Optional[int] = Field(None, ge=0)
+    contract_amount: Optional[int] = Field(None, ge=0)
     customer_rate: Optional[int] = Field(None, ge=0)
     employee_payout: Optional[int] = Field(None, ge=0)
     other_expense: Optional[int] = Field(None, ge=0)
@@ -321,6 +324,7 @@ class AssignmentUpdate(BaseModel):
         "duration_days",
         "customer_daily_rate",
         "employee_daily_rate",
+        "contract_amount",
         "customer_rate",
         "employee_payout",
         "other_expense",
@@ -371,6 +375,7 @@ class AssignmentResponse(IdTimestampSchema):
     dest_lng: Optional[float] = None
     customer_daily_rate: Optional[int] = None
     employee_daily_rate: Optional[int] = None
+    contract_amount: Optional[int] = None
     customer_rate: Optional[int] = None
     employee_payout: Optional[int] = None
     other_expense: Optional[int] = None

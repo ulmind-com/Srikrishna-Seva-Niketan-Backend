@@ -89,7 +89,10 @@ class Assignment(TimestampedDocument):
     customer_daily_rate: Optional[int] = None  # charged to the customer per day
     employee_daily_rate: Optional[int] = None  # paid to the staff member per day
 
-    customer_rate: Optional[int] = None  # contract value — revenue for this engagement
+    # Agreed total contract / package amount entered by admin (kept intact across daily billing).
+    contract_amount: Optional[int] = None
+
+    customer_rate: Optional[int] = None  # calculated daily bill — revenue for this engagement
     employee_payout: Optional[int] = None  # paid to the staff member — an expense
     other_expense: Optional[int] = None  # misc cost for this engagement (travel, kit…)
 

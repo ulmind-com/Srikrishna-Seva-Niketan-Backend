@@ -163,9 +163,15 @@ def _derive_amounts(
         return data
     cdr = data.get("customer_daily_rate", existing_cdr)
     edr = data.get("employee_daily_rate", existing_edr)
-    if cdr is not None and "customer_rate" not in data:
+    contract_amt = data.get(
+        "contract_amount",
+        existing.contract_amount if existing else None,
+    )
+    if cdr is not None:
         data["customer_rate"] = int(round(cdr * total_days))
-    if edr is not None and "employee_payout" not in data:
+    elif contract_amt is not None and "customer_rate" not in data:
+        data["customer_rate"] = int(contract_amt)
+    if edr is not None:
         data["employee_payout"] = int(round(edr * total_days))
     return data
 
@@ -909,6 +915,7 @@ class ReplaceStaffRequest(BaseModel):
     reason: Optional[str] = None
     customer_daily_rate: Optional[int] = None
     employee_daily_rate: Optional[int] = None
+    contract_amount: Optional[int] = None
     notes: Optional[str] = None
 
 
@@ -924,6 +931,7 @@ class BatchReplaceItem(BaseModel):
     reason: Optional[str] = None
     customer_daily_rate: Optional[int] = None
     employee_daily_rate: Optional[int] = None
+    contract_amount: Optional[int] = None
     notes: Optional[str] = None
 
 
@@ -938,6 +946,7 @@ class MultiStaffItem(BaseModel):
     end_time: Optional[str] = None
     customer_daily_rate: Optional[int] = None
     employee_daily_rate: Optional[int] = None
+    contract_amount: Optional[int] = None
     notes: Optional[str] = None
 
 
@@ -955,6 +964,7 @@ class MultiStaffAssignmentRequest(BaseModel):
     duration_days: Optional[int] = None
     customer_daily_rate: Optional[int] = None
     employee_daily_rate: Optional[int] = None
+    contract_amount: Optional[int] = None
     payment_type: Optional[str] = "prepaid"
     notes: Optional[str] = None
     staff_list: list[MultiStaffItem]
@@ -1053,6 +1063,7 @@ async def _perform_staff_replacement(
         "end_date": target_end_date,
         "customer_daily_rate": cdr,
         "employee_daily_rate": edr,
+        "contract_amount": existing.contract_amount,
         "status": AssignmentStatus.SCHEDULED,
         "acceptance_status": AcceptanceStatus.PENDING,
         "payment_type": existing.payment_type,
@@ -1254,6 +1265,7 @@ async def multi_staff_assign(
             "end_date": calculated_end_date,
             "customer_daily_rate": cdr,
             "employee_daily_rate": edr,
+            "contract_amount": staff.contract_amount if staff.contract_amount is not None else payload.contract_amount,
             "status": AssignmentStatus.SCHEDULED,
             "acceptance_status": AcceptanceStatus.PENDING,
             "payment_type": payload.payment_type or "prepaid",

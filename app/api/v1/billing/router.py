@@ -58,14 +58,15 @@ def _daily_rate(a: Assignment) -> int:
     """Per-day customer charge — explicit daily rate, else derived from the total."""
     if a.customer_daily_rate is not None and a.customer_daily_rate > 0:
         return a.customer_daily_rate
-    if a.customer_rate:
+    total_ref = a.customer_rate or a.contract_amount
+    if total_ref:
         duty_days = a.days_worked
         if not duty_days and a.end_date:
             duty_days = calculate_duty_days(
                 a.start_date, a.end_date, a.start_time, a.end_time, a.shift, a.duty_breaks
             )
         if duty_days and duty_days > 0:
-            return round(a.customer_rate / duty_days)
+            return round(total_ref / duty_days)
     return 0
 
 
