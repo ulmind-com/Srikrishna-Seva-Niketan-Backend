@@ -5,7 +5,7 @@ from __future__ import annotations
 import datetime as dt
 from typing import Any, List, Optional, Self
 
-from pydantic import BaseModel, Field, computed_field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator, model_validator
 
 from app.models.assignment import DutyBreak, ShiftWindow
 from app.models.enums import (
@@ -17,6 +17,16 @@ from app.models.enums import (
     ShiftType,
 )
 from app.schemas.common import IdTimestampSchema
+from app.utils.ist_time import (
+    calculate_duty_days_ist,
+    parse_flexible_date as _ist_parse_flexible_date,
+    today_ist,
+)
+
+
+def _parse_flexible_date(v):
+    parsed = _ist_parse_flexible_date(v)
+    return parsed if parsed is not None or v is None or v == "" else v
 
 
 class DutyBreakCreate(BaseModel):
@@ -37,6 +47,8 @@ class DutyBreakCreate(BaseModel):
 class DutyBreakResponse(BaseModel):
     """Duty break record representation."""
 
+    model_config = ConfigDict(from_attributes=True)
+
     id: str
     start_date: dt.date
     end_date: dt.date
@@ -44,34 +56,6 @@ class DutyBreakResponse(BaseModel):
     end_time: Optional[str] = None
     reason: Optional[str] = None
     created_at: Optional[dt.datetime] = None
-
-
-def _parse_flexible_date(v):
-    if v is None or v == "":
-        return None
-    if isinstance(v, dt.date):
-        return v
-    if isinstance(v, str):
-        v = v.strip()
-        if not v:
-            return None
-        if "T" in v:
-            v = v.split("T")[0]
-        if "/" in v:
-            parts = v.split("/")
-            if len(parts) == 3:
-                if len(parts[2]) == 4:
-                    return dt.date(int(parts[2]), int(parts[1]), int(parts[0]))
-                elif len(parts[0]) == 4:
-                    return dt.date(int(parts[0]), int(parts[1]), int(parts[2]))
-        elif "-" in v:
-            parts = v.split("-")
-            if len(parts) == 3:
-                if len(parts[2]) == 4:
-                    return dt.date(int(parts[2]), int(parts[1]), int(parts[0]))
-                elif len(parts[0]) == 4:
-                    return dt.date(int(parts[0]), int(parts[1]), int(parts[2]))
-    return v
 
 
 def _fmt_time(hhmm: Optional[str]) -> Optional[str]:
@@ -88,64 +72,6 @@ def _fmt_time(hhmm: Optional[str]) -> Optional[str]:
     return f"{h12}:{m_i:02d} {suffix}"
 
 
-def _calculate_raw_duty_days(
-    start_date: dt.date,
-    end_date: Optional[dt.date],
-    start_time: Optional[str] = None,
-    end_time: Optional[str] = None,
-    shift: ShiftType = ShiftType.FULL_24H,
-    shift_windows: Optional[Sequence[Any]] = None,
-    is_handover: bool = False,
-) -> float:
-    """Calculate the base duty days without deducting breaks."""
-    if not end_date:
-        return 0.0
-    if end_date < start_date:
-        return 0.0
-
-    cal_diff = (end_date - start_date).days
-    calendar_days = cal_diff + 1
-
-    if start_time and end_time:
-        try:
-            st_h, st_m = map(int, start_time.split(":")[:2])
-            et_h, et_m = map(int, end_time.split(":")[:2])
-
-            if shift == ShiftType.FULL_24H:
-                st_dt = dt.datetime.combine(start_date, dt.time(st_h, st_m))
-                et_dt = dt.datetime.combine(end_date, dt.time(et_h, et_m))
-                diff_seconds = (et_dt - st_dt).total_seconds()
-                if diff_seconds > 0:
-                    duty_days = round((diff_seconds / 3600.0 / 24.0) * 2) / 2
-                    if duty_days > 0:
-                        return duty_days
-                elif is_handover and diff_seconds == 0:
-                    return 0.0
-            else:
-                st_mins = st_h * 60 + st_m
-                et_mins = et_h * 60 + et_m
-                if cal_diff == 0:
-                    if is_handover and et_mins == st_mins:
-                        return 0.0
-                    return 1.0
-                if et_mins == st_mins:
-                    return float(cal_diff)
-                if et_mins < st_mins:
-                    # Multi-window custom duty explicitly spanning consecutive calendar days
-                    if shift == ShiftType.CUSTOM and shift_windows and cal_diff == 1 and len(shift_windows) >= 2:
-                        return float(max(calendar_days, len(shift_windows)))
-                    # Overnight shift ending next morning or handover before shift start
-                    return float(cal_diff)
-                # et_mins > st_mins
-                if is_handover and shift in (ShiftType.DAY, ShiftType.NIGHT) and (et_mins - st_mins) <= 6 * 60:
-                    return float(cal_diff) + 0.5
-                return float(calendar_days)
-        except Exception:
-            pass
-
-    return float(calendar_days)
-
-
 def calculate_duty_days(
     start_date: dt.date,
     end_date: Optional[dt.date],
@@ -156,45 +82,24 @@ def calculate_duty_days(
     shift_windows: Optional[Sequence[Any]] = None,
     is_handover: bool = False,
 ) -> float:
-    """Calculate the net payable duty days, deducting any temporary breaks / pause."""
-    if not end_date:
-        return 0.0
-    if end_date < start_date:
-        return 0.0
-
-    gross_days = _calculate_raw_duty_days(
-        start_date, end_date, start_time, end_time, shift, shift_windows, is_handover
+    """Calculate net payable duty days in Asia/Kolkata (IST), deducting merged breaks."""
+    return calculate_duty_days_ist(
+        start_date=start_date,
+        end_date=end_date,
+        start_time=start_time,
+        end_time=end_time,
+        shift=shift,
+        duty_breaks=duty_breaks,
+        shift_windows=shift_windows,
+        is_handover=is_handover,
     )
-    if not duty_breaks:
-        return gross_days
-
-    total_break_days = 0.0
-    for b in duty_breaks:
-        b_dict = b if isinstance(b, dict) else (b.model_dump() if hasattr(b, "model_dump") else b.__dict__)
-        b_start = _parse_flexible_date(b_dict.get("start_date"))
-        b_end = _parse_flexible_date(b_dict.get("end_date"))
-        if not b_start or not b_end:
-            continue
-        c_start = max(b_start, start_date)
-        c_end = min(b_end, end_date)
-        if c_end < c_start:
-            continue
-        b_st = b_dict.get("start_time")
-        b_et = b_dict.get("end_time")
-        if b_st and b_et:
-            b_days = _calculate_raw_duty_days(c_start, c_end, b_st, b_et, shift)
-        else:
-            b_days = float((c_end - c_start).days + 1)
-        total_break_days += b_days
-
-    return max(0.0, round((gross_days - total_break_days) * 2) / 2)
 
 
 def compute_assignment_financials(
     a: Any, today: Optional[dt.date] = None
 ) -> tuple[float, int, int, int, bool]:
     """Single source of truth for (duty_days, bill, payout, other_expense, is_ended)."""
-    ref_today = today or dt.date.today()
+    ref_today = today or today_ist()
     status_val = str(getattr(a.status, "value", a.status))
     is_ended = a.end_date is not None or status_val in (
         AssignmentStatus.COMPLETED.value,
@@ -480,7 +385,7 @@ class AssignmentResponse(IdTimestampSchema):
     @property
     def days_elapsed(self) -> float:
         """Days already completed — today is still counted as remaining."""
-        today = dt.date.today()
+        today = today_ist()
         if today <= self.start_date:
             return 0.0
         if self.end_date is not None and today > self.end_date:
@@ -576,7 +481,7 @@ class StaffAssignmentResponse(IdTimestampSchema):
         total = self.total_days
         if total is None:
             return None
-        today = dt.date.today()
+        today = today_ist()
         if today <= self.start_date:
             return total
         if self.end_date is not None and today > self.end_date:

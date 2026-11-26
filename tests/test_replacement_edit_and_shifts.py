@@ -601,3 +601,104 @@ async def test_attendance_payslips_reports_match_assignment_24h_days_and_payout(
     assert fin["summary"]["total_expenses"] == 700
     assert fin["summary"]["total_profit"] == 2100
 
+
+@pytest.mark.asyncio
+async def test_ist_breaks_and_schedule_edits_sync_attendance_payslip_and_bill(
+    client: AsyncClient, auth_headers: dict
+):
+    from app.services import report_service
+    import datetime as dt
+
+    loc_id, cust_id, emp1_id, _emp2_id = await _seed_branch_and_people()
+
+    # 1. Create evening-to-evening 24h duty: Nov 1 19:00 (7 PM) -> Nov 15 19:00 (7 PM) = 14.0 days
+    res = await client.post(
+        "/api/v1/assignments",
+        json={
+            "customer_id": cust_id,
+            "employee_id": emp1_id,
+            "location_id": loc_id,
+            "shift": "full_24h",
+            "start_date": "2026-11-01",
+            "end_date": "2026-11-15",
+            "start_time": "19:00",
+            "end_time": "19:00",
+            "customer_daily_rate": 500,
+            "employee_daily_rate": 300,
+        },
+        headers=auth_headers,
+    )
+    assert res.status_code == 201, res.text
+    a1 = res.json()["data"]
+    assert a1["days_worked"] == 14.0
+    assert a1["customer_rate"] == 7000
+    assert a1["employee_payout"] == 4200
+
+    # 2. Apply a 48h pause: Nov 5 19:00 -> Nov 7 19:00 (2.0 days OFF: Nov 5 & Nov 6; resumes Nov 7 19:00)
+    brk = await client.post(
+        f"/api/v1/assignments/{a1['id']}/breaks",
+        json={
+            "start_date": "2026-11-05",
+            "end_date": "2026-11-07",
+            "start_time": "19:00",
+            "end_time": "19:00",
+            "reason": "Hospitalization",
+        },
+        headers=auth_headers,
+    )
+    assert brk.status_code == 200, brk.text
+    a1_brk = brk.json()["data"]
+    assert a1_brk["days_worked"] == 12.0
+    assert a1_brk["customer_rate"] == 6000
+    assert a1_brk["employee_payout"] == 3600
+
+    # Payslip immediately reflects 12 present days (3600) and ONLY Nov 5 & Nov 6 off (NOT Nov 7!)
+    slip_brk = (
+        await client.get(
+            f"/api/v1/payroll/payslip?employee_id={emp1_id}&month=2026-11",
+            headers=auth_headers,
+        )
+    ).json()["data"]
+    assert slip_brk["summary"]["present_days"] == 12
+    assert slip_brk["summary"]["payable_days"] == 12.0
+    assert slip_brk["summary"]["gross_pay"] == 3600
+    assert slip_brk["off_dates"] == ["2026-11-05", "2026-11-06"]
+
+    # 3. Remove the break -> Attendance & Payslip immediately restore Nov 5 & Nov 6 back to Present (14 days / 4200)
+    break_id = a1_brk["duty_breaks"][0]["id"]
+    rm_brk = await client.delete(
+        f"/api/v1/assignments/{a1['id']}/breaks/{break_id}",
+        headers=auth_headers,
+    )
+    assert rm_brk.status_code == 200, rm_brk.text
+    assert rm_brk.json()["data"]["days_worked"] == 14.0
+
+    # 4. Edit time to Nov 1 19:00 -> Nov 16 07:00 (14.5 days -> 14 full days + half-day on Nov 15)
+    upd = await client.put(
+        f"/api/v1/assignments/{a1['id']}",
+        json={"end_date": "2026-11-16", "end_time": "07:00"},
+        headers=auth_headers,
+    )
+    assert upd.status_code == 200, upd.text
+    assert upd.json()["data"]["days_worked"] == 14.5
+    assert upd.json()["data"]["employee_payout"] == 4350
+
+    slip_half = (
+        await client.get(
+            f"/api/v1/payroll/payslip?employee_id={emp1_id}&month=2026-11",
+            headers=auth_headers,
+        )
+    ).json()["data"]
+    assert slip_half["summary"]["present_days"] == 14
+    assert slip_half["summary"]["half_days"] == 1
+    assert slip_half["summary"]["payable_days"] == 14.5
+    assert slip_half["summary"]["gross_pay"] == 4350
+    nov15_row = next(d for d in slip_half["days"] if d["date"] == "2026-11-15")
+    assert nov15_row["status"] == "half_day"
+    assert nov15_row["start_time"] == "19:00"
+    assert nov15_row["end_time"] == "07:00"
+
+    pnl = await report_service.profit_loss({}, dt.date(2026, 11, 1), dt.date(2026, 11, 30))
+    assert pnl["revenue"] == 7250
+    assert pnl["staff_payout"] == 4350
+

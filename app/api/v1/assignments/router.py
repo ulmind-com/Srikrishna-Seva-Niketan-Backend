@@ -43,9 +43,12 @@ from app.schemas.assignment import (
     calculate_duty_days,
 )
 from app.services.crud import CrudService
+from app.services.dashboard_service import invalidate_dashboard_cache
 from app.services.email_service import email_service
 from app.services.geo_service import geo_service
 from app.services.notification_service import notification_service
+from app.services.payroll_service import sync_assignment_attendance
+from app.utils.ist_time import now_ist, today_ist
 
 logger = logging.getLogger(__name__)
 
@@ -279,9 +282,9 @@ async def _sync_replacement_chain(
                 _recompute_assignment_totals(pred)
             pred.touch()
             await pred.save()
-            await _prune_attendance_outside_span(str(pred.id), pred.start_date, pred.end_date)
+            await sync_assignment_attendance(pred)
 
-        await _prune_attendance_outside_span(str(doc.id), doc.start_date, doc.end_date)
+        await sync_assignment_attendance(doc)
 
     # 2. Editing a replaced predecessor's end_date / end_time syncs forward to successor's start.
     end_changed = (
@@ -312,7 +315,7 @@ async def _sync_replacement_chain(
                 _recompute_assignment_totals(succ)
             succ.touch()
             await succ.save()
-            await _prune_attendance_outside_span(str(succ.id), succ.start_date, succ.end_date)
+            await sync_assignment_attendance(succ)
 
 
 async def _check_employee_conflict(
@@ -402,7 +405,7 @@ async def daily_roster(
     manager reads each morning. Scoped like the rest of the module, so a branch
     manager only gets their own branches.
     """
-    day = date or dt.date.today()
+    day = date or today_ist()
     day_dt = dt.datetime.combine(day, dt.time.min)
 
     filters: dict = actor.scope_filter()
@@ -462,7 +465,7 @@ async def deployment_overview(
     so the same screen answers "how many of my staff are out, how many are left,
     and how many days until each one is back".
     """
-    today = dt.datetime.combine(dt.date.today(), dt.time.min)
+    today = dt.datetime.combine(today_ist(), dt.time.min)
 
     locations = await Location.find({"is_active": True}).sort("order").to_list()
     if actor.is_scoped:
@@ -742,6 +745,7 @@ async def update_assignment(
 
     doc = await _assignments.update(assignment_id, data, actor)
     await _sync_replacement_chain(doc, prev_schedule)
+    await sync_assignment_attendance(doc)
 
     # Keep the staff member's availability in sync + tell them about status changes.
     if "status" in data:
@@ -840,17 +844,18 @@ async def admin_complete_assignment(
     existing = await _assignments.get_or_404(assignment_id)
     ensure_can_access(actor, existing.location_id)
 
-    now = dt.datetime.now(dt.timezone.utc)
-    today = now.date()
+    now_utc = dt.datetime.now(dt.timezone.utc)
+    now_local = now_ist()
+    today = now_local.date()
 
     existing.status = AssignmentStatus.COMPLETED
     existing.acceptance_status = AcceptanceStatus.ACCEPTED
-    existing.work_completed_at = now
+    existing.work_completed_at = now_utc
 
     if existing.end_date is None:
         existing.end_date = today
         if not existing.end_time:
-            existing.end_time = now.strftime("%H:%M")
+            existing.end_time = now_local.strftime("%H:%M")
 
     eff_days = _recompute_assignment_totals(existing)
 
@@ -862,7 +867,7 @@ async def admin_complete_assignment(
 
     if is_postpaid or payload.cash_collected:
         existing.payment_status = PaymentStatus.PAID
-        existing.payment_received_at = now
+        existing.payment_received_at = now_utc
         existing.payment_received_by = payload.received_by or f"Super Admin ({actor_name}) on behalf of {emp_name}"
         if amount > 0:
             try:
@@ -888,6 +893,7 @@ async def admin_complete_assignment(
 
     existing.touch()
     await existing.save()
+    await sync_assignment_attendance(existing)
 
     # Free staff member
     await _set_employee_status(existing.employee_id, EmployeeStatus.AVAILABLE)
@@ -1008,7 +1014,7 @@ async def _perform_staff_replacement(
         raise BadRequestException("Replacement staff must be different from current staff")
 
     orig_end_date = existing.end_date
-    today = dt.date.today()
+    today = today_ist()
 
     # 1. Update previous staff's assignment
     if payload.effective_date == existing.start_date:
@@ -1021,6 +1027,7 @@ async def _perform_staff_replacement(
         existing.notes = f"{existing.notes} | {note_suffix}" if existing.notes else note_suffix
         existing.touch()
         await existing.save()
+        await sync_assignment_attendance(existing)
         await _set_employee_status(existing.employee_id, EmployeeStatus.AVAILABLE)
     else:
         old_end_date = min(existing.end_date, payload.effective_date) if existing.end_date else payload.effective_date
@@ -1040,6 +1047,7 @@ async def _perform_staff_replacement(
         existing.notes = f"{existing.notes} | {note_suffix}" if existing.notes else note_suffix
         existing.touch()
         await existing.save()
+        await sync_assignment_attendance(existing)
 
     # 2. Create the new replacement assignment
     cdr = payload.customer_daily_rate if payload.customer_daily_rate is not None else existing.customer_daily_rate
@@ -1409,28 +1417,12 @@ async def add_duty_break(
     assignment.touch()
     await assignment.save()
 
-    # Sync attendance records in the break period to OFF / 0 rate
+    # Sync attendance records accurately against IST break intervals
     try:
-        await AttendanceRecord.get_motor_collection().update_many(
-            {
-                "assignment_id": str(assignment.id),
-                "date": {
-                    "$gte": dt.datetime.combine(payload.start_date, dt.time.min),
-                    "$lte": dt.datetime.combine(payload.end_date, dt.time.max),
-                },
-            },
-            {
-                "$set": {
-                    "status": AttendanceStatus.OFF.value,
-                    "pay_rate": 0,
-                    "note": f"Break: {payload.reason or 'Duty pause'}",
-                }
-            },
-        )
+        await sync_assignment_attendance(assignment)
     except Exception as exc:
         logger.warning("Failed to sync attendance on break addition: %s", exc)
 
-    from app.services.dashboard_service import invalidate_dashboard_cache
     invalidate_dashboard_cache()
 
     return item_response(AssignmentResponse, assignment, "Duty break added successfully")
@@ -1452,7 +1444,6 @@ async def remove_duty_break(
     matched = [b for b in assignment.duty_breaks if b.id == break_id]
     if not matched:
         raise BadRequestException(f"Duty break {break_id} not found")
-    target_break = matched[0]
 
     assignment.duty_breaks = [b for b in assignment.duty_breaks if b.id != break_id]
 
@@ -1461,32 +1452,12 @@ async def remove_duty_break(
     assignment.touch()
     await assignment.save()
 
-    # Reset attendance records for the removed break dates back to PRESENT
+    # Reconcile attendance records back to active IST schedule
     try:
-        emp_rate = assignment.employee_daily_rate
-        if emp_rate is None:
-            emp = await _employees.get(assignment.employee_id)
-            emp_rate = emp.daily_rate if emp else 0
-        await AttendanceRecord.get_motor_collection().update_many(
-            {
-                "assignment_id": str(assignment.id),
-                "date": {
-                    "$gte": dt.datetime.combine(target_break.start_date, dt.time.min),
-                    "$lte": dt.datetime.combine(target_break.end_date, dt.time.max),
-                },
-            },
-            {
-                "$set": {
-                    "status": AttendanceStatus.PRESENT.value,
-                    "pay_rate": emp_rate,
-                    "note": None,
-                }
-            },
-        )
+        await sync_assignment_attendance(assignment)
     except Exception as exc:
         logger.warning("Failed to reset attendance on break removal: %s", exc)
 
-    from app.services.dashboard_service import invalidate_dashboard_cache
     invalidate_dashboard_cache()
 
     return item_response(AssignmentResponse, assignment, "Duty break removed successfully")

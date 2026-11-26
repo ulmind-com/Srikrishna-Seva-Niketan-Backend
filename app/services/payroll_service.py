@@ -11,31 +11,27 @@ from __future__ import annotations
 
 import calendar
 import datetime as dt
-import math
 from typing import Dict, List, Optional, Sequence, Tuple
-from zoneinfo import ZoneInfo
 
 from app.models.assignment import Assignment
 from app.models.attendance import AttendanceRecord
 from app.models.employee import Employee
 from app.models.enums import AssignmentStatus, AttendanceStatus, ShiftType, StaffVerificationStatus
-from app.schemas.assignment import calculate_duty_days
+from app.utils.ist_time import (
+    assignment_attendance_schedule_ist,
+    calculate_duty_days_ist,
+    today_ist,
+)
 
 _PAYABLE = (AttendanceStatus.PRESENT, AttendanceStatus.HALF_DAY)
 _OFF = (AttendanceStatus.LEAVE, AttendanceStatus.OFF)
 _OCCUPYING = (AssignmentStatus.SCHEDULED, AssignmentStatus.ACTIVE)
-_IST = ZoneInfo("Asia/Kolkata")
-
-
-def today_ist() -> dt.date:
-    """Today's date in Asia/Kolkata — the business calendar, not the UTC server."""
-    return dt.datetime.now(_IST).date()
 
 
 def _assignment_gross_days(a: Assignment) -> Optional[float]:
     """Return exact gross worked days (before duty breaks) when assignment span is closed."""
     if a.end_date is not None:
-        return calculate_duty_days(
+        return calculate_duty_days_ist(
             a.start_date,
             a.end_date,
             a.start_time,
@@ -51,39 +47,144 @@ def _assignment_gross_days(a: Assignment) -> Optional[float]:
 
 
 def _effective_assignment_end(a: Assignment, cap: dt.date) -> dt.date:
-    """Determine the final attendance date of an assignment aligned with calculate_duty_days.
+    """Final attendance calendar date of an assignment aligned with IST slot calculation."""
+    schedule = assignment_attendance_schedule_ist(a, cap)
+    if not schedule:
+        return a.start_date - dt.timedelta(days=1)
+    return schedule[-1]["date"]
 
-    For closed/replaced engagements, N exact duty cycles starting on `start_date`
-    occupy dates `[start_date, start_date + ceil(gross_days) - 1]` so e.g.
-    Nov 1 07:00 AM -> Nov 15 07:00 AM (14.0 days) covers Nov 1..14 (14 rows),
-    NEVER adding an extra 15th row on the handover checkout morning.
-    """
-    gross_days = _assignment_gross_days(a)
-    if gross_days is not None:
-        if gross_days <= 0:
-            return a.start_date - dt.timedelta(days=1)
-        return min(a.start_date + dt.timedelta(days=max(math.ceil(gross_days) - 1, 0)), cap)
-    if a.status in (AssignmentStatus.COMPLETED, AssignmentStatus.REPLACED):
-        if a.shift_windows and len(a.shift_windows) > 1:
-            return min(a.start_date + dt.timedelta(days=len(a.shift_windows) - 1), cap)
-        if a.start_time and a.end_time and a.end_time <= a.start_time:
-            return min(a.start_date + dt.timedelta(days=1), cap)
-        return min(a.start_date, cap)
-    return cap
+
+async def _sync_one_assignment_rows(
+    a: Assignment,
+    emp: Optional[Employee],
+    existing_synced: Dict[Tuple[str, dt.date, str], AttendanceRecord],
+    handmarked: set,
+    new_rows: List[AttendanceRecord],
+    cap: dt.date,
+    filter_first: Optional[dt.date] = None,
+    filter_last: Optional[dt.date] = None,
+) -> None:
+    """Reconcile synced AttendanceRecord rows for a single assignment against IST schedule."""
+    if emp is None or emp.verification_status != StaffVerificationStatus.VERIFIED:
+        return
+    rate = a.employee_daily_rate if a.employee_daily_rate is not None else emp.daily_rate
+    schedule = assignment_attendance_schedule_ist(a, cap)
+    valid_dates = {item["date"] for item in schedule}
+
+    # Prune any stale synced rows for this assignment outside its valid worked dates
+    try:
+        asg_rows = await AttendanceRecord.find({"assignment_id": str(a.id)}).to_list()
+        stale_ids = [r.id for r in asg_rows if r.date not in valid_dates and r.id is not None]
+        if stale_ids:
+            await AttendanceRecord.get_motor_collection().delete_many({"_id": {"$in": stale_ids}})
+    except Exception:
+        pass
+
+    for item in schedule:
+        day: dt.date = item["date"]
+        if filter_first and day < filter_first:
+            continue
+        if filter_last and day > filter_last:
+            continue
+
+        rec_status: AttendanceStatus = item["status"]
+        day_start_time: Optional[str] = item["start_time"]
+        day_end_time: Optional[str] = item["end_time"]
+        day_windows = item["shift_windows"]
+        day_note: Optional[str] = item["note"]
+        day_rate = 0 if rec_status == AttendanceStatus.OFF else rate
+
+        key_day = (a.employee_id, day)
+        key_syn = (a.employee_id, day, str(a.id))
+        existing_rec = existing_synced.get(key_syn)
+
+        if existing_rec is not None:
+            updates: dict = {}
+            is_system_break = bool(
+                existing_rec.note
+                and (
+                    existing_rec.note.startswith("Break:")
+                    or existing_rec.note.startswith("Half Break:")
+                )
+            )
+            # Only overwrite status/pay_rate when the row is still assignment-driven
+            # (never overwrite an admin manual ABSENT or manual OFF mark).
+            if existing_rec.status in (AttendanceStatus.PRESENT, AttendanceStatus.HALF_DAY) or is_system_break:
+                if existing_rec.status != rec_status:
+                    updates["status"] = rec_status
+                if existing_rec.pay_rate != day_rate:
+                    updates["pay_rate"] = day_rate
+                if existing_rec.note != day_note and (day_note is not None or is_system_break):
+                    updates["note"] = day_note
+            if existing_rec.shift != a.shift:
+                updates["shift"] = a.shift
+            if existing_rec.start_time != day_start_time:
+                updates["start_time"] = day_start_time
+            if existing_rec.end_time != day_end_time:
+                updates["end_time"] = day_end_time
+            if existing_rec.customer_name != a.customer_name:
+                updates["customer_name"] = a.customer_name
+            if updates:
+                updates["updated_at"] = dt.datetime.now(dt.timezone.utc)
+                for k, v in updates.items():
+                    setattr(existing_rec, k, v)
+                await existing_rec.save()
+        elif key_day not in handmarked:
+            rec_doc = AttendanceRecord(
+                employee_id=a.employee_id,
+                employee_name=a.employee_name,
+                location_id=a.location_id,
+                date=day,
+                status=rec_status,
+                shift=a.shift,
+                start_time=day_start_time,
+                end_time=day_end_time,
+                shift_windows=day_windows,
+                assignment_id=str(a.id),
+                customer_name=a.customer_name,
+                pay_rate=day_rate,
+                note=day_note,
+            )
+            new_rows.append(rec_doc)
+            existing_synced[key_syn] = rec_doc
+
+
+async def sync_assignment_attendance(a: Assignment, cap_date: Optional[dt.date] = None) -> None:
+    """Immediately reconcile AttendanceRecord rows when a single assignment is edited, replaced, or paused."""
+    cap = min(cap_date or today_ist(), today_ist())
+    if a.status == AssignmentStatus.CANCELLED:
+        await AttendanceRecord.get_motor_collection().delete_many({"assignment_id": str(a.id)})
+        return
+
+    emp = await Employee.get(a.employee_id)
+    if emp is None or emp.verification_status != StaffVerificationStatus.VERIFIED:
+        return
+
+    existing_rows = await AttendanceRecord.find({"employee_id": a.employee_id}).to_list()
+    handmarked: set = set()
+    existing_synced: Dict[Tuple[str, dt.date, str], AttendanceRecord] = {}
+    for r in existing_rows:
+        if r.assignment_id:
+            existing_synced[(r.employee_id, r.date, r.assignment_id)] = r
+        else:
+            handmarked.add((r.employee_id, r.date))
+
+    new_rows: List[AttendanceRecord] = []
+    await _sync_one_assignment_rows(a, emp, existing_synced, handmarked, new_rows, cap)
+    if new_rows:
+        await AttendanceRecord.insert_many(new_rows)
 
 
 async def materialize_from_assignments(
     first: dt.date, last: dt.date, location_ids: Optional[List[str]] = None
 ) -> int:
-    """Create PRESENT attendance rows for assignment-active days that have none.
+    """Create and sync AttendanceRecord rows from active/closed engagements in IST.
 
-    "Auto Present": every day a staff member is engaged counts as present on the
-    payslip without the admin marking it. Idempotent and override-safe:
-    - a day the admin hand-marked (any status, no assignment_id) is left alone,
-    - an assignment's day that already has its row is skipped,
-    - two assignments on one day create two rows (two shifts pay twice),
-    - days after today are never marked (pay only for worked days).
-    Rows are inserted directly (no audit) since they are system-generated.
+    Idempotent and override-safe:
+    - manual admin rows (no assignment_id) are left alone,
+    - synced rows reflect exact IST start/end dates, times, shifts, handovers, and merged breaks,
+    - stale rows outside an assignment's worked IST span (e.g. extra checkout morning) are pruned,
+    - days after today (IST) are never marked.
     """
     today = today_ist()
     cap = min(last, today)
@@ -94,8 +195,6 @@ async def materialize_from_assignments(
     cap_dt = dt.datetime.combine(cap, dt.time.min)
 
     a_filter: dict = {
-        # A completed duty is still a day worked, so include everything except
-        # cancelled engagements (not only scheduled/active).
         "status": {"$ne": AssignmentStatus.CANCELLED.value},
         "start_date": {"$lte": cap_dt},
         "$or": [{"end_date": None}, {"end_date": {"$gte": first_dt}}],
@@ -134,128 +233,16 @@ async def materialize_from_assignments(
 
     new_rows: List[AttendanceRecord] = []
     for a in assignments:
-        emp = employees.get(a.employee_id)
-        if emp is None or emp.verification_status != StaffVerificationStatus.VERIFIED:
-            continue
-        rate = a.employee_daily_rate if a.employee_daily_rate is not None else emp.daily_rate
-        a_start = max(a.start_date, first)
-        worked_end = _effective_assignment_end(a, max(cap, a.end_date or cap))
-        a_end = min(worked_end, cap)
-        total_assignment_days = max((a_end - a.start_date).days + 1, 1)
-
-        gross_days = _assignment_gross_days(a)
-        eff_days = gross_days if gross_days is not None else a.days_worked
-        is_half_day_end = bool(eff_days and (eff_days % 1 != 0))
-
-        # Prune stale synced rows outside [a.start_date, worked_end] (e.g. extra handover checkout day or moved start_date)
-        try:
-            await AttendanceRecord.get_motor_collection().delete_many({
-                "assignment_id": str(a.id),
-                "$or": [
-                    {"date": {"$lt": dt.datetime.combine(a.start_date, dt.time.min)}},
-                    {"date": {"$gt": dt.datetime.combine(worked_end, dt.time.max)}},
-                ],
-            })
-        except Exception:
-            pass
-
-        # If assignment has duty breaks, ensure records in break periods are set to OFF / 0 rate
-        if a.duty_breaks:
-            for b in a.duty_breaks:
-                try:
-                    await AttendanceRecord.get_motor_collection().update_many(
-                        {
-                            "assignment_id": str(a.id),
-                            "date": {
-                                "$gte": dt.datetime.combine(b.start_date, dt.time.min),
-                                "$lte": dt.datetime.combine(b.end_date, dt.time.max),
-                            },
-                        },
-                        {
-                            "$set": {
-                                "status": AttendanceStatus.OFF.value,
-                                "pay_rate": 0,
-                                "note": f"Break: {b.reason or 'Duty pause'}",
-                            }
-                        },
-                    )
-                except Exception:
-                    pass
-
-        day = a_start
-        while day <= a_end:
-            day_idx = (day - a.start_date).days
-            day_start_time = a.start_time
-            day_end_time = a.end_time
-            day_windows = a.shift_windows
-
-            # If the assignment specifies distinct per-day shift windows
-            if a.shift_windows and len(a.shift_windows) == total_assignment_days and 0 <= day_idx < len(a.shift_windows):
-                w = a.shift_windows[day_idx]
-                day_start_time = w.start
-                day_end_time = w.end
-                day_windows = [w]
-
-            # Check if this day is a break day
-            break_match = None
-            if a.duty_breaks:
-                for b in a.duty_breaks:
-                    if b.start_date <= day <= b.end_date:
-                        break_match = b
-                        break
-
-            if break_match:
-                rec_status = AttendanceStatus.OFF
-                day_rate = 0
-                day_note = f"Break: {break_match.reason or 'Duty pause'}"
-            else:
-                rec_status = AttendanceStatus.HALF_DAY if (is_half_day_end and day == worked_end) else AttendanceStatus.PRESENT
-                day_rate = rate
-                day_note = None
-
-            key_day = (a.employee_id, day)
-            key_syn = (a.employee_id, day, str(a.id))
-            existing_rec = existing_synced.get(key_syn)
-            if existing_rec is not None:
-                # Keep synced pay_rate / schedule / PRESENT<->HALF_DAY aligned with the assignment
-                updates: dict = {}
-                if existing_rec.status in (AttendanceStatus.PRESENT, AttendanceStatus.HALF_DAY) and not break_match:
-                    if existing_rec.status != rec_status:
-                        updates["status"] = rec_status
-                    if existing_rec.pay_rate != day_rate:
-                        updates["pay_rate"] = day_rate
-                if existing_rec.shift != a.shift:
-                    updates["shift"] = a.shift
-                if existing_rec.start_time != day_start_time:
-                    updates["start_time"] = day_start_time
-                if existing_rec.end_time != day_end_time:
-                    updates["end_time"] = day_end_time
-                if existing_rec.customer_name != a.customer_name:
-                    updates["customer_name"] = a.customer_name
-                if updates:
-                    updates["updated_at"] = dt.datetime.now(dt.timezone.utc)
-                    for k, v in updates.items():
-                        setattr(existing_rec, k, v)
-                    await existing_rec.save()
-            elif key_day not in handmarked:
-                rec_doc = AttendanceRecord(
-                    employee_id=a.employee_id,
-                    employee_name=a.employee_name,
-                    location_id=a.location_id,
-                    date=day,
-                    status=rec_status,
-                    shift=a.shift,
-                    start_time=day_start_time,
-                    end_time=day_end_time,
-                    shift_windows=day_windows,
-                    assignment_id=str(a.id),
-                    customer_name=a.customer_name,
-                    pay_rate=day_rate,
-                    note=day_note,
-                )
-                new_rows.append(rec_doc)
-                existing_synced[key_syn] = rec_doc
-            day += dt.timedelta(days=1)
+        await _sync_one_assignment_rows(
+            a,
+            employees.get(a.employee_id),
+            existing_synced,
+            handmarked,
+            new_rows,
+            cap,
+            filter_first=first,
+            filter_last=cap,
+        )
 
     if new_rows:
         await AttendanceRecord.insert_many(new_rows)
@@ -463,7 +450,9 @@ async def build_payslip(
                 paid_emitted = True
 
             duration_str = None
-            if rec.status == AttendanceStatus.HALF_DAY and rec.shift == ShiftType.FULL_24H:
+            if rec.status in (AttendanceStatus.OFF, AttendanceStatus.LEAVE, AttendanceStatus.ABSENT):
+                duration_str = "—"
+            elif rec.status == AttendanceStatus.HALF_DAY and rec.shift == ShiftType.FULL_24H:
                 duration_str = "Half Day (12 hrs)"
             elif rec.shift == ShiftType.FULL_24H:
                 duration_str = "24 hrs"
