@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import calendar
 import datetime as dt
+import math
 from typing import Dict, List, Optional, Sequence, Tuple
 from zoneinfo import ZoneInfo
 
@@ -31,18 +32,38 @@ def today_ist() -> dt.date:
     return dt.datetime.now(_IST).date()
 
 
-def _effective_assignment_end(a: Assignment, cap: dt.date) -> dt.date:
-    """Determine the final date of an assignment for payroll attendance purposes.
-
-    Open-ended assignments run up to the cap (today or month-end).
-    Assignments marked COMPLETED that lack an explicit end_date are capped to their
-    actual worked span rather than running indefinitely into the future.
-    """
+def _assignment_gross_days(a: Assignment) -> Optional[float]:
+    """Return exact gross worked days (before duty breaks) when assignment span is closed."""
     if a.end_date is not None:
-        return min(a.end_date, cap)
+        return calculate_duty_days(
+            a.start_date,
+            a.end_date,
+            a.start_time,
+            a.end_time,
+            a.shift,
+            duty_breaks=None,
+            shift_windows=a.shift_windows,
+            is_handover=(a.status == AssignmentStatus.REPLACED),
+        )
+    if a.status in (AssignmentStatus.COMPLETED, AssignmentStatus.REPLACED) and a.days_worked is not None:
+        return float(a.days_worked)
+    return None
+
+
+def _effective_assignment_end(a: Assignment, cap: dt.date) -> dt.date:
+    """Determine the final attendance date of an assignment aligned with calculate_duty_days.
+
+    For closed/replaced engagements, N exact duty cycles starting on `start_date`
+    occupy dates `[start_date, start_date + ceil(gross_days) - 1]` so e.g.
+    Nov 1 07:00 AM -> Nov 15 07:00 AM (14.0 days) covers Nov 1..14 (14 rows),
+    NEVER adding an extra 15th row on the handover checkout morning.
+    """
+    gross_days = _assignment_gross_days(a)
+    if gross_days is not None:
+        if gross_days <= 0:
+            return a.start_date - dt.timedelta(days=1)
+        return min(a.start_date + dt.timedelta(days=max(math.ceil(gross_days) - 1, 0)), cap)
     if a.status in (AssignmentStatus.COMPLETED, AssignmentStatus.REPLACED):
-        if a.days_worked:
-            return min(a.start_date + dt.timedelta(days=max(a.days_worked - 1, 0)), cap)
         if a.shift_windows and len(a.shift_windows) > 1:
             return min(a.start_date + dt.timedelta(days=len(a.shift_windows) - 1), cap)
         if a.start_time and a.end_time and a.end_time <= a.start_time:
@@ -104,10 +125,10 @@ async def materialize_from_assignments(
         pass
 
     handmarked: set = set()  # (employee_id, date) owned by the admin
-    synced: set = set()      # (employee_id, date, assignment_id) already present
+    existing_synced: dict[tuple[str, dt.date, str], AttendanceRecord] = {}
     for r in existing:
         if r.assignment_id:
-            synced.add((r.employee_id, r.date, r.assignment_id))
+            existing_synced[(r.employee_id, r.date, r.assignment_id)] = r
         else:
             handmarked.add((r.employee_id, r.date))
 
@@ -118,21 +139,22 @@ async def materialize_from_assignments(
             continue
         rate = a.employee_daily_rate if a.employee_daily_rate is not None else emp.daily_rate
         a_start = max(a.start_date, first)
-        a_end = _effective_assignment_end(a, cap)
+        worked_end = _effective_assignment_end(a, max(cap, a.end_date or cap))
+        a_end = min(worked_end, cap)
         total_assignment_days = max((a_end - a.start_date).days + 1, 1)
 
-        # Check if the assignment is shortened or if fractional duty applies
-        eff_days = a.days_worked
-        if eff_days is None and a.end_date:
-            eff_days = calculate_duty_days(a.start_date, a.end_date, a.start_time, a.end_time, a.shift, a.duty_breaks)
-
+        gross_days = _assignment_gross_days(a)
+        eff_days = gross_days if gross_days is not None else a.days_worked
         is_half_day_end = bool(eff_days and (eff_days % 1 != 0))
 
-        # Delete any records beyond a_end that were generated in earlier runs
+        # Prune stale synced rows outside [a.start_date, worked_end] (e.g. extra handover checkout day or moved start_date)
         try:
             await AttendanceRecord.get_motor_collection().delete_many({
                 "assignment_id": str(a.id),
-                "date": {"$gt": dt.datetime.combine(a_end, dt.time.max)},
+                "$or": [
+                    {"date": {"$lt": dt.datetime.combine(a.start_date, dt.time.min)}},
+                    {"date": {"$gt": dt.datetime.combine(worked_end, dt.time.max)}},
+                ],
             })
         except Exception:
             pass
@@ -159,20 +181,6 @@ async def materialize_from_assignments(
                     )
                 except Exception:
                     pass
-
-        # If the last day is a half-day and not a break day, update any existing records on a_end to HALF_DAY
-        if is_half_day_end:
-            try:
-                await AttendanceRecord.get_motor_collection().update_many(
-                    {
-                        "assignment_id": str(a.id),
-                        "date": {"$gte": dt.datetime.combine(a_end, dt.time.min), "$lte": dt.datetime.combine(a_end, dt.time.max)},
-                        "status": {"$ne": AttendanceStatus.OFF.value},
-                    },
-                    {"$set": {"status": AttendanceStatus.HALF_DAY.value}},
-                )
-            except Exception:
-                pass
 
         day = a_start
         while day <= a_end:
@@ -201,31 +209,52 @@ async def materialize_from_assignments(
                 day_rate = 0
                 day_note = f"Break: {break_match.reason or 'Duty pause'}"
             else:
-                rec_status = AttendanceStatus.HALF_DAY if (is_half_day_end and day == a_end) else AttendanceStatus.PRESENT
+                rec_status = AttendanceStatus.HALF_DAY if (is_half_day_end and day == worked_end) else AttendanceStatus.PRESENT
                 day_rate = rate
                 day_note = None
 
             key_day = (a.employee_id, day)
             key_syn = (a.employee_id, day, str(a.id))
-            if key_day not in handmarked and key_syn not in synced:
-                new_rows.append(
-                    AttendanceRecord(
-                        employee_id=a.employee_id,
-                        employee_name=a.employee_name,
-                        location_id=a.location_id,
-                        date=day,
-                        status=rec_status,
-                        shift=a.shift,
-                        start_time=day_start_time,
-                        end_time=day_end_time,
-                        shift_windows=day_windows,
-                        assignment_id=str(a.id),
-                        customer_name=a.customer_name,
-                        pay_rate=day_rate,
-                        note=day_note,
-                    )
+            existing_rec = existing_synced.get(key_syn)
+            if existing_rec is not None:
+                # Keep synced pay_rate / schedule / PRESENT<->HALF_DAY aligned with the assignment
+                updates: dict = {}
+                if existing_rec.status in (AttendanceStatus.PRESENT, AttendanceStatus.HALF_DAY) and not break_match:
+                    if existing_rec.status != rec_status:
+                        updates["status"] = rec_status
+                    if existing_rec.pay_rate != day_rate:
+                        updates["pay_rate"] = day_rate
+                if existing_rec.shift != a.shift:
+                    updates["shift"] = a.shift
+                if existing_rec.start_time != day_start_time:
+                    updates["start_time"] = day_start_time
+                if existing_rec.end_time != day_end_time:
+                    updates["end_time"] = day_end_time
+                if existing_rec.customer_name != a.customer_name:
+                    updates["customer_name"] = a.customer_name
+                if updates:
+                    updates["updated_at"] = dt.datetime.now(dt.timezone.utc)
+                    for k, v in updates.items():
+                        setattr(existing_rec, k, v)
+                    await existing_rec.save()
+            elif key_day not in handmarked:
+                rec_doc = AttendanceRecord(
+                    employee_id=a.employee_id,
+                    employee_name=a.employee_name,
+                    location_id=a.location_id,
+                    date=day,
+                    status=rec_status,
+                    shift=a.shift,
+                    start_time=day_start_time,
+                    end_time=day_end_time,
+                    shift_windows=day_windows,
+                    assignment_id=str(a.id),
+                    customer_name=a.customer_name,
+                    pay_rate=day_rate,
+                    note=day_note,
                 )
-                synced.add(key_syn)
+                new_rows.append(rec_doc)
+                existing_synced[key_syn] = rec_doc
             day += dt.timedelta(days=1)
 
     if new_rows:
@@ -249,9 +278,9 @@ def _oids(ids):
 def parse_month(month: Optional[str]) -> Tuple[dt.date, dt.date, int]:
     """Return ``(first_day, last_day, day_count)`` for a ``YYYY-MM`` string.
 
-    Defaults to the current month when ``month`` is missing or malformed.
+    Defaults to the current month in IST when ``month`` is missing or malformed.
     """
-    today = dt.date.today()
+    today = today_ist()
     year, mon = today.year, today.month
     if month:
         try:
@@ -434,12 +463,10 @@ async def build_payslip(
                 paid_emitted = True
 
             duration_str = None
-            if rec.status == AttendanceStatus.HALF_DAY:
+            if rec.status == AttendanceStatus.HALF_DAY and rec.shift == ShiftType.FULL_24H:
                 duration_str = "Half Day (12 hrs)"
             elif rec.shift == ShiftType.FULL_24H:
                 duration_str = "24 hrs"
-            elif rec.shift in (ShiftType.DAY, ShiftType.NIGHT, ShiftType.MORNING):
-                duration_str = "12 hrs"
             elif rec.start_time and rec.end_time:
                 try:
                     sh, sm = map(int, rec.start_time.split(":")[:2])
@@ -450,6 +477,10 @@ async def build_payslip(
                     duration_str = f"{int(dur_h) if dur_h.is_integer() else dur_h:.1f} hrs"
                 except Exception:
                     duration_str = "12 hrs"
+            elif rec.shift == ShiftType.MORNING:
+                duration_str = "8 hrs"
+            elif rec.shift in (ShiftType.DAY, ShiftType.NIGHT, ShiftType.CUSTOM):
+                duration_str = "12 hrs"
 
             daily.append(
                 {

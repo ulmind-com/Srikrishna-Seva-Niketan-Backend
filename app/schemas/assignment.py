@@ -190,6 +190,58 @@ def calculate_duty_days(
     return max(0.0, round((gross_days - total_break_days) * 2) / 2)
 
 
+def compute_assignment_financials(
+    a: Any, today: Optional[dt.date] = None
+) -> tuple[float, int, int, int, bool]:
+    """Single source of truth for (duty_days, bill, payout, other_expense, is_ended)."""
+    ref_today = today or dt.date.today()
+    status_val = str(getattr(a.status, "value", a.status))
+    is_ended = a.end_date is not None or status_val in (
+        AssignmentStatus.COMPLETED.value,
+        AssignmentStatus.REPLACED.value,
+    )
+    if a.end_date is not None:
+        duty_days = calculate_duty_days(
+            a.start_date,
+            a.end_date,
+            a.start_time,
+            a.end_time,
+            a.shift,
+            a.duty_breaks,
+            a.shift_windows,
+            is_handover=(status_val == AssignmentStatus.REPLACED.value),
+        )
+    elif a.days_worked is not None:
+        duty_days = float(a.days_worked)
+    else:
+        duty_days = max(1.0, float((ref_today - a.start_date).days + 1))
+
+    if not is_ended:
+        return duty_days, 0, 0, 0, False
+
+    if a.customer_daily_rate is not None:
+        bill = int(round(a.customer_daily_rate * duty_days))
+    elif a.customer_rate is not None:
+        bill = int(a.customer_rate)
+    elif getattr(a, "contract_amount", None) is not None:
+        bill = int(a.contract_amount)
+    else:
+        bill = 0
+
+    if a.employee_daily_rate is not None:
+        payout = int(round(a.employee_daily_rate * duty_days))
+    else:
+        payout = int(a.employee_payout or 0)
+
+    daily_other = getattr(a, "daily_other_expense", None)
+    if daily_other is not None:
+        other_expense = int(round(daily_other * duty_days))
+    else:
+        other_expense = int(a.other_expense or 0)
+
+    return duty_days, bill, payout, other_expense, True
+
+
 _SHIFT_LABEL = {
     "morning": "Morning",
     "day": "Day",

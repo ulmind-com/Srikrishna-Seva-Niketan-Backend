@@ -287,6 +287,10 @@ async def sync_from_assignments(
     created = 0
     skipped = 0
     for a in running:
+        # Respect exact duty days (so a 24h handover checkout morning doesn't get an extra day).
+        if payroll_service._effective_assignment_end(a, day) < day:
+            skipped += 1
+            continue
         # Keyed per assignment, so a nurse with two duties that day (e.g. a day
         # shift at one client and a night shift at another) gets two rows.
         existing = await AttendanceRecord.find_one(

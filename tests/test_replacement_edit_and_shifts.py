@@ -495,3 +495,109 @@ async def test_contract_amount_preserved_while_daily_bill_and_payout_calculate(
     assert a1_upd["employee_payout"] == 4500
     assert a1_upd["other_expense"] == 750
 
+
+@pytest.mark.asyncio
+async def test_attendance_payslips_reports_match_assignment_24h_days_and_payout(
+    client: AsyncClient, auth_headers: dict
+):
+    import datetime as dt
+    from app.models.attendance import AttendanceRecord
+    from app.models.enums import AttendanceStatus, ShiftType
+    from app.services import report_service
+
+    loc_id, cust_id, emp1_id, emp2_id = await _seed_branch_and_people()
+
+    # 1. Assign emp1 24h from Nov 1 07:00 AM; replaced Nov 15 07:00 AM -> 14 days (Rs 300/day = 4200)
+    res = await client.post(
+        "/api/v1/assignments",
+        json={
+            "customer_id": cust_id,
+            "employee_id": emp1_id,
+            "location_id": loc_id,
+            "shift": "full_24h",
+            "start_date": "2026-11-01",
+            "start_time": "07:00",
+            "contract_amount": 14000,
+            "customer_daily_rate": 500,
+            "employee_daily_rate": 300,
+            "daily_other_expense": 50,
+        },
+        headers=auth_headers,
+    )
+    assert res.status_code == 201, res.text
+    a1_id = res.json()["data"]["id"]
+
+    # Simulate an old stale Nov 15 attendance row with wrong pay_rate=500 having existed before replacement
+    await AttendanceRecord(
+        employee_id=emp1_id,
+        employee_name="Staff One",
+        location_id=loc_id,
+        date=dt.date(2026, 11, 15),
+        status=AttendanceStatus.PRESENT,
+        shift=ShiftType.FULL_24H,
+        start_time="07:00",
+        end_time="07:00",
+        assignment_id=a1_id,
+        customer_name="Test Client",
+        pay_rate=500,
+    ).insert()
+
+    rep = await client.post(
+        f"/api/v1/assignments/{a1_id}/replace-staff",
+        json={
+            "new_employee_id": emp2_id,
+            "effective_date": "2026-11-15",
+            "shift": "full_24h",
+            "start_time": "07:00",
+            "reason": "Handover",
+        },
+        headers=auth_headers,
+    )
+    assert rep.status_code == 200, rep.text
+
+    # 2. Attendance / Payslip statement MUST show 14 days = Rs 4,200 (NOT 15 days = 4,500)
+    slip_res = await client.get(
+        f"/api/v1/payroll/payslip?employee_id={emp1_id}&start_date=2026-11-01&end_date=2026-11-30",
+        headers=auth_headers,
+    )
+    assert slip_res.status_code == 200, slip_res.text
+    slip = slip_res.json()["data"]
+    assert slip["summary"]["present_days"] == 14
+    assert slip["summary"]["payable_days"] == 14.0
+    assert slip["summary"]["total_shifts"] == 14
+    assert slip["summary"]["gross_pay"] == 4200
+    worked_dates = [d["date"] for d in slip["days"] if d["status"] == "present"]
+    assert worked_dates[0] == "2026-11-01"
+    assert worked_dates[-1] == "2026-11-14"
+    assert "2026-11-15" not in worked_dates
+
+    # 3. Monthly Payroll Run matches 14 days = Rs 4,200
+    run_res = await client.get("/api/v1/payroll/payslips?month=2026-11", headers=auth_headers)
+    assert run_res.status_code == 200, run_res.text
+    emp1_row = next(r for r in run_res.json()["data"]["rows"] if r["employee_id"] == emp1_id)
+    assert emp1_row["payable_days"] == 14.0
+    assert emp1_row["gross_pay"] == 4200
+
+    # 4. General Bill matches 14 days = Rs 7,000
+    bill_res = await client.get(
+        f"/api/v1/billing/monthly?start_date=2026-11-01&end_date=2026-11-30&customer_id={cust_id}",
+        headers=auth_headers,
+    )
+    assert bill_res.status_code == 200, bill_res.text
+    bill = bill_res.json()["data"]["bills"][0]
+    assert bill["total_days"] == 14.0
+    assert bill["total_amount"] == 7000
+
+    # 5. Report P&L and Financial report match Assignment exact totals (7000 / 4200 / 700 / profit=2100)
+    pnl = await report_service.profit_loss({}, dt.date(2026, 11, 1), dt.date(2026, 11, 30))
+    assert pnl["revenue"] == 7000
+    assert pnl["staff_payout"] == 4200
+    assert pnl["assignment_expense"] == 700
+    assert pnl["profit"] == 2100
+
+    fin = await report_service.duty_report({}, start=dt.date(2026, 11, 1), end=dt.date(2026, 11, 30))
+    assert fin["summary"]["total_billed"] == 7000
+    assert fin["summary"]["total_staff_payout"] == 4200
+    assert fin["summary"]["total_expenses"] == 700
+    assert fin["summary"]["total_profit"] == 2100
+

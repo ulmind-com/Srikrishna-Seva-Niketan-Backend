@@ -198,7 +198,9 @@ class DashboardService:
         profit = total_revenue - total_expense
 
         # Today's duties — date-aware on-duty count + shift breakdown.
-        today = dt.date.today()
+        from app.services import payroll_service as _pay
+
+        today = _pay.today_ist()
         today_dt = dt.datetime.combine(today, dt.time.min)
         todays_duties = await Assignment.find(
             {
@@ -213,8 +215,6 @@ class DashboardService:
             by_shift[a.shift.value] = by_shift.get(a.shift.value, 0) + 1
 
         # This month's payout — auto-filled from duties, then summed from attendance.
-        from app.services import payroll_service as _pay
-
         pay_first, pay_last, pay_days = _pay.parse_month(None)
         pay_locs = location_ids if is_scoped else None
         try:

@@ -1,5 +1,8 @@
 """Tests for operational staff (employee) endpoints."""
 
+import datetime as dt
+from zoneinfo import ZoneInfo
+
 import pytest
 from app.models.location import Location
 
@@ -74,9 +77,10 @@ async def test_create_employee_with_frontend_empty_fields(client, auth_headers):
     resp = await client.post("/api/v1/employees", json=fe_payload, headers=auth_headers)
     assert resp.status_code == 201
     data = resp.json()["data"]
+
     assert data["name"] == "Staff Form Values"
     assert data["gender"] is None
-    assert data["join_date"] is None
+    assert data["join_date"] == dt.datetime.now(ZoneInfo("Asia/Kolkata")).date().isoformat()
     assert data["email"] is None
     assert data["rating"] == 5.0
 

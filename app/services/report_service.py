@@ -83,86 +83,41 @@ async def profit_loss(
     date_rng = _date_bounds(start, end)
 
     # ---- Engagements: contract revenue, staff payout, payslips (server-side) ----
+    from app.schemas.assignment import compute_assignment_financials
+    from app.services.payroll_service import today_ist
+
     assign_match = _merge(
         scope,
         {"start_date": date_rng} if date_rng else None,
         {"status": {"$ne": AssignmentStatus.CANCELLED.value}},
     )
-    assign_agg = await Assignment.aggregate(
-        [
-            {"$match": assign_match},
-            # Days billed per engagement — full span when closed, days elapsed so
-            # far when ongoing (so an open duty still contributes accrued value).
-            {
-                "$addFields": {
-                    "_eff_days": {
-                        "$cond": [
-                            {"$ifNull": ["$end_date", False]},
-                            {"$add": [{"$dateDiff": {"startDate": "$start_date", "endDate": "$end_date", "unit": "day"}}, 1]},
-                            {"$max": [1, {"$add": [{"$dateDiff": {"startDate": "$start_date", "endDate": "$$NOW", "unit": "day"}}, 1]}]},
-                        ]
-                    }
-                }
-            },
-            # Prefer the stored total; else derive from the per-day rate × days.
-            {
-                "$addFields": {
-                    "_eff_bill": {
-                        "$ifNull": ["$customer_rate", {"$multiply": [{"$ifNull": ["$customer_daily_rate", 0]}, "$_eff_days"]}]
-                    },
-                    "_eff_payout": {
-                        "$ifNull": ["$employee_payout", {"$multiply": [{"$ifNull": ["$employee_daily_rate", 0]}, "$_eff_days"]}]
-                    },
-                    "_eff_other": {
-                        "$ifNull": ["$other_expense", {"$multiply": [{"$ifNull": ["$daily_other_expense", 0]}, "$_eff_days"]}]
-                    },
-                }
-            },
-            {
-                "$facet": {
-                    "totals": [
-                        {
-                            "$group": {
-                                "_id": None,
-                                "revenue": {"$sum": {"$ifNull": ["$_eff_bill", 0]}},
-                                "staff_payout": {"$sum": {"$ifNull": ["$_eff_payout", 0]}},
-                                "assignment_other": {"$sum": {"$ifNull": ["$_eff_other", 0]}},
-                                "count": {"$sum": 1},
-                            }
-                        }
-                    ],
-                    "payslips": [
-                        {"$match": {"_eff_payout": {"$gt": 0}}},
-                        {
-                            "$group": {
-                                "_id": "$employee_id",
-                                "employee_name": {"$first": "$employee_name"},
-                                "total_payout": {"$sum": "$_eff_payout"},
-                                "engagements": {"$sum": 1},
-                            }
-                        },
-                        {"$sort": {"total_payout": -1}},
-                    ],
-                }
-            },
-        ]
-    ).to_list()
+    assignments = await Assignment.find(assign_match).to_list()
+    ref_today = today_ist()
+    revenue = 0
+    staff_payout = 0
+    assignment_other = 0
+    assignment_count = len(assignments)
+    emp_totals: Dict[str, dict] = {}
 
-    facet = assign_agg[0] if assign_agg else {}
-    totals = (facet.get("totals") or [{}])[0]
-    revenue = totals.get("revenue", 0)
-    staff_payout = totals.get("staff_payout", 0)
-    assignment_other = totals.get("assignment_other", 0)
-    assignment_count = totals.get("count", 0)
-    payslips = [
-        {
-            "employee_id": r["_id"],
-            "employee_name": r.get("employee_name"),
-            "total_payout": r["total_payout"],
-            "engagements": r["engagements"],
-        }
-        for r in facet.get("payslips", [])
-    ]
+    for a in assignments:
+        _, bill, payout, other_exp, _ = compute_assignment_financials(a, ref_today)
+        revenue += bill
+        staff_payout += payout
+        assignment_other += other_exp
+        if payout > 0:
+            entry = emp_totals.get(a.employee_id)
+            if entry is None:
+                entry = {
+                    "employee_id": a.employee_id,
+                    "employee_name": a.employee_name,
+                    "total_payout": 0,
+                    "engagements": 0,
+                }
+                emp_totals[a.employee_id] = entry
+            entry["total_payout"] += payout
+            entry["engagements"] += 1
+
+    payslips = sorted(emp_totals.values(), key=lambda r: r["total_payout"], reverse=True)
 
     # ---- Standalone expenses ledger (rent, utilities, etc.) ----
     exp_match = _merge(scope, {"date": date_rng} if date_rng else None)
@@ -490,28 +445,16 @@ async def duty_report(
     postpaid_collected = 0
     postpaid_pending = 0
 
-    today = dt.date.today()
+    from app.schemas.assignment import compute_assignment_financials
+    from app.services.payroll_service import today_ist
+
+    today = today_ist()
     items = []
     for a in assignments:
         cust = cust_map.get(a.customer_id)
         emp = emp_map.get(a.employee_id)
 
-        # Days billed: the full span for a closed engagement, or days elapsed so
-        # far for an ongoing one (so an open duty still shows accrued value).
-        if a.days_worked is not None:
-            eff_days = a.days_worked
-        elif a.end_date:
-            eff_days = calculate_duty_days(
-                a.start_date, a.end_date, a.start_time, a.end_time, a.shift, a.duty_breaks
-            )
-        else:
-            eff_days = max(1.0, float((today - a.start_date).days + 1))
-
-        # Prefer the stored total; for an ongoing duty (no stored total) derive
-        # it from the per-day rate × elapsed days so bill/pay are never ₹0.
-        bill = a.customer_rate if a.customer_rate is not None else int(round((a.customer_daily_rate or 0) * eff_days))
-        payout = a.employee_payout if a.employee_payout is not None else int(round((a.employee_daily_rate or 0) * eff_days))
-        exp = a.other_expense if a.other_expense is not None else int(round((a.daily_other_expense or 0) * eff_days))
+        eff_days, bill, payout, exp, is_ended = compute_assignment_financials(a, today)
         profit = bill - payout - exp
         margin = round(profit / bill * 100) if bill > 0 else 0
 
@@ -535,14 +478,10 @@ async def duty_report(
                 prepaid_count += 1
                 prepaid_total += bill
 
-        if a.days_worked is not None:
-            duration_days = a.days_worked
-        elif a.end_date:
-            duration_days = calculate_duty_days(
-                a.start_date, a.end_date, a.start_time, a.end_time, a.shift, a.duty_breaks
-            )
-        else:
+        if not is_ended:
             duration_days = None
+        else:
+            duration_days = eff_days
 
         items.append({
             "id": str(a.id),
