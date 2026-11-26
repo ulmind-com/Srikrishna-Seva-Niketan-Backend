@@ -52,6 +52,21 @@ async def test_employee_and_customer_multiple_documents(
     emp_in_db = await Employee.get(emp_data["id"])
     assert emp_in_db is not None
     assert len(emp_in_db.documents) == 3
+    assert emp_in_db.join_date is not None
+
+    # 1b. Create Staff with explicit join_date
+    res_emp_jd = await client.post(
+        "/api/v1/employees",
+        json={
+            "name": "Explicit Join Date Nurse",
+            "phone": "9000011199",
+            "location_id": loc_id,
+            "join_date": "2026-11-10",
+        },
+        headers=auth_headers,
+    )
+    assert res_emp_jd.status_code == 201
+    assert res_emp_jd.json()["data"]["join_date"] == "2026-11-10"
 
     # 2. Update Staff to add Driving License as 4th document
     res_upd = await client.put(

@@ -98,6 +98,9 @@ async def create_employee(
     data["location_id"] = resolve_create_location(actor, data.get("location_id"))
     data["code"] = await _unique_code()
     data.setdefault("verification_status", StaffVerificationStatus.VERIFIED.value)
+    if not data.get("join_date"):
+        from zoneinfo import ZoneInfo
+        data["join_date"] = dt.datetime.now(ZoneInfo("Asia/Kolkata")).date()
     doc = await _employees.create(data, actor)
     return item_response(EmployeeResponse, doc, "Employee registered")
 
