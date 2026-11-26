@@ -702,3 +702,121 @@ async def test_ist_breaks_and_schedule_edits_sync_attendance_payslip_and_bill(
     assert pnl["revenue"] == 7250
     assert pnl["staff_payout"] == 4350
 
+
+@pytest.mark.asyncio
+async def test_complex_half_day_breaks_and_replacement_chain_sync(
+    client: AsyncClient, auth_headers: dict
+):
+    """End-to-end 12.5d (with middle break) + 13.5d replacement across ALL modules."""
+    import datetime as dt
+    from app.services import report_service
+
+    loc_id, cust_id, emp1_id, emp2_id = await _seed_branch_and_people()
+
+    # 1. Nurse 1 starts Oct 1 07:00 AM (Rs 1000 cust, Rs 600 staff, Rs 50 exp)
+    r1 = await client.post(
+        "/api/v1/assignments",
+        json={
+            "customer_id": cust_id,
+            "employee_id": emp1_id,
+            "location_id": loc_id,
+            "shift": "full_24h",
+            "start_date": "2026-10-01",
+            "start_time": "07:00",
+            "customer_daily_rate": 1000,
+            "employee_daily_rate": 600,
+            "daily_other_expense": 50,
+        },
+        headers=auth_headers,
+    )
+    assert r1.status_code == 201, r1.text
+    a1_id = r1.json()["data"]["id"]
+
+    # 2. 2-day middle break: Oct 5 07:00 -> Oct 7 07:00
+    brk = await client.post(
+        f"/api/v1/assignments/{a1_id}/breaks",
+        json={
+            "start_date": "2026-10-05",
+            "end_date": "2026-10-07",
+            "start_time": "07:00",
+            "end_time": "07:00",
+            "reason": "Hospital gap",
+        },
+        headers=auth_headers,
+    )
+    assert brk.status_code == 200, brk.text
+
+    # 3. Replace Nurse 1 with Nurse 2 on Oct 15 at 19:00 (07:00 PM) -> Nurse 1 worked 14.5 - 2.0 = 12.5 days!
+    rep = await client.post(
+        f"/api/v1/assignments/{a1_id}/replace-staff",
+        json={
+            "new_employee_id": emp2_id,
+            "effective_date": "2026-10-15",
+            "shift": "full_24h",
+            "start_time": "19:00",
+            "end_date": "2026-10-29",
+            "end_time": "07:00",
+            "reason": "Evening handover",
+        },
+        headers=auth_headers,
+    )
+    assert rep.status_code == 200, rep.text
+    prev_a = rep.json()["data"]["previous_assignment"]
+    new_a = rep.json()["data"]["new_assignment"]
+
+    assert prev_a["days_worked"] == 12.5
+    assert prev_a["customer_rate"] == 12500
+    assert prev_a["employee_payout"] == 7500
+    assert prev_a["other_expense"] == 625
+
+    # Nurse 2: Oct 15 19:00 -> Oct 29 07:00 = 13.5 days
+    assert new_a["days_worked"] == 13.5
+    assert new_a["customer_rate"] == 13500
+    assert new_a["employee_payout"] == int(round(750 * 13.5))  # 10125
+
+    # 4. Payslips for BOTH nurses match exact half-days + breaks!
+    slip1 = (
+        await client.get(
+            f"/api/v1/payroll/payslip?employee_id={emp1_id}&month=2026-10",
+            headers=auth_headers,
+        )
+    ).json()["data"]
+    assert slip1["summary"]["present_days"] == 12
+    assert slip1["summary"]["half_days"] == 1
+    assert slip1["summary"]["off_days"] == 2
+    assert slip1["off_dates"] == ["2026-10-05", "2026-10-06"]
+    assert slip1["summary"]["payable_days"] == 12.5
+    assert slip1["summary"]["gross_pay"] == 7500
+
+    slip2 = (
+        await client.get(
+            f"/api/v1/payroll/payslip?employee_id={emp2_id}&month=2026-10",
+            headers=auth_headers,
+        )
+    ).json()["data"]
+    assert slip2["summary"]["present_days"] == 13
+    assert slip2["summary"]["half_days"] == 1
+    assert slip2["summary"]["payable_days"] == 13.5
+    assert slip2["summary"]["gross_pay"] == 10125
+
+    # 5. General Bill consolidates 12.5d + 13.5d = 26.0d (Rs 26,000)
+    bill_res = await client.get(
+        f"/api/v1/billing/monthly?start_date=2026-10-01&end_date=2026-10-31&customer_id={cust_id}",
+        headers=auth_headers,
+    )
+    assert bill_res.status_code == 200, bill_res.text
+    bill = bill_res.json()["data"]["bills"][0]
+    assert bill["total_days"] == 26.0
+    assert bill["total_amount"] == 26000
+    assert [li["days"] for li in bill["line_items"]] == [12.5, 13.5]
+
+    # 6. Reports match Assignment & Bill totals!
+    pnl = await report_service.profit_loss({}, dt.date(2026, 10, 1), dt.date(2026, 10, 31))
+    assert pnl["revenue"] == 26000
+    assert pnl["staff_payout"] == 7500 + 10125
+    assert pnl["assignment_expense"] == 625 + int(round(50 * 13.5))  # 1300
+    fin = await report_service.duty_report({}, start=dt.date(2026, 10, 1), end=dt.date(2026, 10, 31))
+    assert fin["summary"]["total_billed"] == 26000
+    assert fin["summary"]["total_staff_payout"] == 17625
+    assert fin["summary"]["total_expenses"] == 1300
+

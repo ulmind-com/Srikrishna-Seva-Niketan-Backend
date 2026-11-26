@@ -11,6 +11,8 @@ import datetime as dt
 from typing import Any, List, Optional, Sequence, Tuple
 from zoneinfo import ZoneInfo
 
+from dateutil import parser as dateutil_parser
+
 from app.models.enums import AssignmentStatus, AttendanceStatus, ShiftType
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -67,6 +69,13 @@ def parse_flexible_date(v: Any) -> Optional[dt.date]:
                             return dt.date(int(parts[0]), int(parts[1]), int(parts[2]))
                     except ValueError:
                         return None
+        try:
+            parsed = dateutil_parser.parse(s, dayfirst="/" in s)
+            if parsed.tzinfo is not None:
+                return parsed.astimezone(IST).date()
+            return parsed.date()
+        except (ValueError, TypeError, OverflowError):
+            return None
     return None
 
 

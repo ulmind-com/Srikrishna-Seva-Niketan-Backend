@@ -18,12 +18,14 @@ dependencies = [
     "pydantic-settings==2.7.1",
     "pyjwt==2.10.1",
     "pymongo==4.9.2",
+    "python-dateutil>=2.9.0",
     "python-dotenv==1.0.1",
     "python-jose[cryptography]==3.3.0",
     "python-multipart==0.0.20",
     "python-slugify==8.0.4",
     "slowapi==0.1.9",
     "tenacity==9.0.0",
+    "tzdata>=2024.1",
     "uvicorn[standard]==0.34.0",
 ]
 
