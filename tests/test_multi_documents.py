@@ -82,11 +82,14 @@ async def test_employee_and_customer_multiple_documents(
     assert res_upd.status_code == 200
     assert len(res_upd.json()["data"]["documents"]) == 4
 
-    # 3. Create Customer with Aadhaar + PAN (including PDF attachment)
+    # 3. Create Customer with Aadhaar + PAN (including PDF attachment), purpose & agreement_date
     cust_payload = {
         "name": "Multi Doc Client",
         "phone": "9800011122",
         "location_id": loc_id,
+        "care_type": "home",
+        "purpose": "Post-surgery recovery care",
+        "agreement_date": "2026-11-22",
         "documents": [
             {
                 "doc_type": "Aadhaar",
@@ -104,6 +107,8 @@ async def test_employee_and_customer_multiple_documents(
     res_cust = await client.post("/api/v1/customers", json=cust_payload, headers=auth_headers)
     assert res_cust.status_code == 201
     cust_data = res_cust.json()["data"]
+    assert cust_data["purpose"] == "Post-surgery recovery care"
+    assert cust_data["agreement_date"] == "2026-11-22"
     assert len(cust_data["documents"]) == 2
     assert cust_data["documents"][0]["file"]["format"] == "pdf"
     assert cust_data["documents"][0]["file"]["original_filename"] == "aadhaar.pdf"
@@ -113,3 +118,12 @@ async def test_employee_and_customer_multiple_documents(
     cust_in_db = await Customer.get(cust_data["id"])
     assert cust_in_db is not None
     assert len(cust_in_db.documents) == 2
+
+    # 3b. Default agreement_date when omitted
+    res_cust2 = await client.post(
+        "/api/v1/customers",
+        json={"name": "Default Agreement Date Client", "phone": "9800011133", "location_id": loc_id},
+        headers=auth_headers,
+    )
+    assert res_cust2.status_code == 201
+    assert res_cust2.json()["data"]["agreement_date"] is not None

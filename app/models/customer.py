@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 from typing import List, Optional
 
 import pymongo
@@ -34,6 +35,8 @@ class Customer(TimestampedDocument):
     documents: List[IdentityDocument] = Field(default_factory=list)
 
     care_type: CareType = CareType.HOME
+    purpose: Optional[str] = None
+    agreement_date: Optional[dt.date] = None
     service_label: Optional[str] = None  # e.g. "24 hrs Health Attendant"
     duration_days: Optional[int] = None  # requested engagement length
     one_to_one: bool = True  # one dedicated staff member per customer

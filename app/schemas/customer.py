@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from typing import List, Optional
+import datetime as dt
+from typing import Any, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.models.base import IdentityDocument, ImageAsset
 from app.models.enums import CareType
@@ -23,6 +24,8 @@ class CustomerCreate(BaseModel):
     id_proof_number: Optional[str] = Field(None, max_length=40)
     documents: Optional[List[IdentityDocument]] = None
     care_type: CareType = CareType.HOME
+    purpose: Optional[str] = Field(None, max_length=200)
+    agreement_date: Optional[dt.date] = None
     service_label: Optional[str] = Field(None, max_length=200)
     duration_days: Optional[int] = Field(None, ge=0)
     one_to_one: bool = True
@@ -32,6 +35,22 @@ class CustomerCreate(BaseModel):
     billing_rate: Optional[int] = Field(None, ge=0)
     notes: Optional[str] = Field(None, max_length=2000)
     is_active: bool = True
+
+    @field_validator("agreement_date", mode="before")
+    @classmethod
+    def clean_agreement_date(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            v = v.strip()
+            return v if v else None
+        return v
+
+    @field_validator("purpose", mode="before")
+    @classmethod
+    def clean_purpose(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            v = v.strip()
+            return v if v else None
+        return v
 
 
 class CustomerUpdate(BaseModel):
@@ -46,6 +65,8 @@ class CustomerUpdate(BaseModel):
     id_proof_number: Optional[str] = Field(None, max_length=40)
     documents: Optional[List[IdentityDocument]] = None
     care_type: Optional[CareType] = None
+    purpose: Optional[str] = Field(None, max_length=200)
+    agreement_date: Optional[dt.date] = None
     service_label: Optional[str] = Field(None, max_length=200)
     duration_days: Optional[int] = Field(None, ge=0)
     one_to_one: Optional[bool] = None
@@ -55,6 +76,22 @@ class CustomerUpdate(BaseModel):
     billing_rate: Optional[int] = Field(None, ge=0)
     notes: Optional[str] = Field(None, max_length=2000)
     is_active: Optional[bool] = None
+
+    @field_validator("agreement_date", mode="before")
+    @classmethod
+    def clean_agreement_date(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            v = v.strip()
+            return v if v else None
+        return v
+
+    @field_validator("purpose", mode="before")
+    @classmethod
+    def clean_purpose(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            v = v.strip()
+            return v if v else None
+        return v
 
 
 class CustomerResponse(IdTimestampSchema):
@@ -70,6 +107,8 @@ class CustomerResponse(IdTimestampSchema):
     id_proof_number: Optional[str] = None
     documents: List[IdentityDocument] = Field(default_factory=list)
     care_type: CareType
+    purpose: Optional[str] = None
+    agreement_date: Optional[dt.date] = None
     service_label: Optional[str] = None
     duration_days: Optional[int] = None
     one_to_one: bool

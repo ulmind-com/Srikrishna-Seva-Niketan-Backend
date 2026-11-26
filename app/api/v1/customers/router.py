@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import secrets
 import string
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Query
 
@@ -90,6 +92,8 @@ async def create_customer(
     sync_identity_documents(data)
     data["location_id"] = resolve_create_location(actor, data.get("location_id"))
     data["code"] = await _unique_code()
+    if not data.get("agreement_date"):
+        data["agreement_date"] = dt.datetime.now(ZoneInfo("Asia/Kolkata")).date()
     await _ensure_coords(data)
     doc = await _customers.create(data, actor)
     return item_response(CustomerResponse, doc, "Customer registered")
