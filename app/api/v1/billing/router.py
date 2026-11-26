@@ -122,6 +122,15 @@ async def _compute_bills(
     period_key = month_label or f"{start_date.isoformat()}_{end_date.isoformat()}"
     issued = {mb.key: mb for mb in await MonthlyBill.find({}).to_list()}
 
+    from app.models.finance import Payment
+    all_paid_rows = await Payment.find(
+        {"status": {"$ne": "pending"}}
+    ).to_list()
+    paid_by_asg: dict[str, int] = {}
+    for p in all_paid_rows:
+        if p.assignment_id:
+            paid_by_asg[p.assignment_id] = paid_by_asg.get(p.assignment_id, 0) + p.amount
+
     # Group by customer so one customer receives ONE consolidated bill,
     # even when duty was split across multiple staff members (e.g. replacement).
     groups: dict[str, dict] = {}
@@ -260,6 +269,17 @@ async def _compute_bills(
         if mb:
             g["bill_no"] = mb.bill_no
         g["bill_no_formatted"] = format_bill_no(g.get("bill_no"))
+        paid_total = sum(
+            paid_by_asg.get(li["assignment_id"], 0) for li in g["line_items"]
+        )
+        g["paid_amount"] = paid_total
+        g["outstanding_amount"] = max(0, g["total_amount"] - paid_total)
+        if paid_total >= g["total_amount"] and g["total_amount"] > 0:
+            g["payment_status"] = "paid"
+        elif paid_total > 0:
+            g["payment_status"] = "partial"
+        else:
+            g["payment_status"] = "pending"
 
     result.sort(key=lambda g: (g["customer_name"] or "").lower())
     return result

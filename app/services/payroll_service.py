@@ -108,8 +108,16 @@ async def _sync_one_assignment_rows(
                 )
             )
             # Only overwrite status/pay_rate when the row is still assignment-driven
-            # (never overwrite an admin manual ABSENT or manual OFF mark).
-            if existing_rec.status in (AttendanceStatus.PRESENT, AttendanceStatus.HALF_DAY) or is_system_break:
+            # (never overwrite an admin manual ABSENT, manual OFF, or Leave mark).
+            is_manual_leave = existing_rec.status == AttendanceStatus.LEAVE and bool(
+                existing_rec.note and (
+                    existing_rec.note.startswith("Paid Leave:")
+                    or existing_rec.note.startswith("Leave:")
+                )
+            )
+            if (
+                existing_rec.status in (AttendanceStatus.PRESENT, AttendanceStatus.HALF_DAY) or is_system_break
+            ) and not is_manual_leave:
                 if existing_rec.status != rec_status:
                     updates["status"] = rec_status
                 if existing_rec.pay_rate != day_rate:
@@ -279,9 +287,13 @@ def parse_month(month: Optional[str]) -> Tuple[dt.date, dt.date, int]:
     return dt.date(year, mon, 1), dt.date(year, mon, days), days
 
 
-def _day_amount(status: AttendanceStatus, pay_rate: Optional[int]) -> int:
+def _is_paid_leave(r: AttendanceRecord) -> bool:
+    return r.status == AttendanceStatus.LEAVE and bool(r.note and r.note.startswith("Paid Leave"))
+
+
+def _day_amount(status: AttendanceStatus, pay_rate: Optional[int], is_paid_leave: bool = False) -> int:
     rate = pay_rate or 0
-    if status == AttendanceStatus.PRESENT:
+    if status == AttendanceStatus.PRESENT or is_paid_leave:
         return rate
     if status == AttendanceStatus.HALF_DAY:
         return round(rate / 2)
@@ -309,7 +321,7 @@ def _date_amount(rows: Sequence[AttendanceRecord], fallback_rate: Optional[int])
     present_rates = [
         (r.pay_rate if r.pay_rate is not None else fallback_rate) or 0
         for r in rows
-        if r.status == AttendanceStatus.PRESENT
+        if r.status == AttendanceStatus.PRESENT or _is_paid_leave(r)
     ]
     if present_rates:
         return max(present_rates)
@@ -320,7 +332,7 @@ def _date_amount(rows: Sequence[AttendanceRecord], fallback_rate: Optional[int])
     ]
     if half_rates:
         return round(max(half_rates) / 2)
-    return 0  # leave / off / absent earn nothing
+    return 0  # unpaid leave / off / absent earn nothing
 
 
 def _summarize(records: Sequence[AttendanceRecord], fallback_rate: Optional[int]) -> dict:
@@ -344,39 +356,49 @@ def _summarize(records: Sequence[AttendanceRecord], fallback_rate: Optional[int]
 
     present_dates: set[dt.date] = set()
     half_only_dates: set[dt.date] = set()
+    paid_leave_dates: set[dt.date] = set()
     absent_dates: set[dt.date] = set()
     off_dates: set[dt.date] = set()
+    leave_only_count = 0
     marked_dates: set[dt.date] = set(by_date.keys())
     gross = 0
 
     # Pay once per date (highest shift rate), never per shift row.
     for day, rows in by_date.items():
         has_present = any(x.status == AttendanceStatus.PRESENT for x in rows)
+        has_paid_leave = any(_is_paid_leave(x) for x in rows)
         has_half = any(x.status == AttendanceStatus.HALF_DAY for x in rows)
         has_absent = any(x.status == AttendanceStatus.ABSENT for x in rows)
+        has_leave = any(x.status == AttendanceStatus.LEAVE for x in rows)
         has_off = any(x.status in (AttendanceStatus.OFF, AttendanceStatus.LEAVE) for x in rows)
 
         if has_present:
             present_dates.add(day)
+        elif has_paid_leave:
+            paid_leave_dates.add(day)
+            leave_only_count += 1
         elif has_half:
             half_only_dates.add(day)
         elif has_absent:
             absent_dates.add(day)
         elif has_off:
             off_dates.add(day)
+            if has_leave:
+                leave_only_count += 1
 
         gross += _date_amount(rows, fallback_rate)
 
     present_count = len(present_dates)
     half_count = len(half_only_dates)
+    paid_leave_count = len(paid_leave_dates)
     worked_count = present_count + half_count
-    payable_days = present_count + half_count * 0.5
+    payable_days = present_count + half_count * 0.5 + paid_leave_count
 
     return {
         "present_days": present_count,
         "total_shifts": total_shifts,
         "half_days": half_count,
-        "leave_days": 0,
+        "leave_days": leave_only_count,
         "off_days": len(off_dates),
         "absent_days": len(absent_dates),
         "worked_days": worked_count,
@@ -491,6 +513,17 @@ async def build_payslip(
     summary = _summarize(records, fallback_rate)
     summary["unmarked_days"] = days - summary["marked_days"]
 
+    from app.models.finance import StaffPayment
+    eff_month = f"{first.year:04d}-{first.month:02d}"
+    sp_docs = await StaffPayment.find({"employee_id": emp_id}).to_list()
+    paid_amount = sum(
+        sp.amount
+        for sp in sp_docs
+        if (sp.month == eff_month if sp.month else (first <= sp.date <= last))
+    )
+    summary["paid_amount"] = paid_amount
+    summary["remaining_amount"] = max(0, summary["net_payable"] - paid_amount)
+
     return {
         "employee": {
             "id": emp_id,
@@ -542,8 +575,21 @@ async def payroll_run(
     for r in records:
         grouped.setdefault(r.employee_id, []).append(r)
 
+    from app.models.finance import StaffPayment
+
+    eff_month = f"{first.year:04d}-{first.month:02d}"
+    sp_filter: dict = {}
+    if location_ids is not None:
+        sp_filter["location_id"] = {"$in": location_ids}
+    all_sp = await StaffPayment.find(sp_filter).to_list()
+    sp_by_emp: Dict[str, int] = {}
+    for sp in all_sp:
+        if sp.month == eff_month if sp.month else (first <= sp.date <= last):
+            sp_by_emp[sp.employee_id] = sp_by_emp.get(sp.employee_id, 0) + sp.amount
+
     rows: List[dict] = []
     total_gross = 0
+    total_paid = 0
     for e in sorted(employees, key=lambda x: x.name.lower()):
         eid = str(e.id)
         emp_records = grouped.get(eid, [])
@@ -555,6 +601,8 @@ async def payroll_run(
                     break
         summary = _summarize(emp_records, rate)
         total_gross += summary["gross_pay"]
+        emp_paid = sp_by_emp.get(eid, 0)
+        total_paid += emp_paid
         rows.append(
             {
                 "employee_id": eid,
@@ -574,13 +622,15 @@ async def payroll_run(
                 "gross_pay": summary["gross_pay"],
                 "leave_deduction": summary["leave_deduction"],
                 "net_payable": summary["net_payable"],
+                "paid_amount": emp_paid,
+                "remaining_amount": max(0, summary["net_payable"] - emp_paid),
                 "by_shift": summary["by_shift"],
             }
         )
 
     return {
         "period": {
-            "month": f"{first.year:04d}-{first.month:02d}",
+            "month": eff_month,
             "start": first.isoformat(),
             "end": last.isoformat(),
             "days_in_month": days,
@@ -588,6 +638,8 @@ async def payroll_run(
         "totals": {
             "employees": len(rows),
             "total_gross_pay": total_gross,
+            "total_paid": total_paid,
+            "total_remaining": max(0, total_gross - total_paid),
         },
         "rows": rows,
     }

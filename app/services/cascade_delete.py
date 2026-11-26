@@ -12,13 +12,13 @@ from app.dependencies.scoping import get_default_location_id, set_default_locati
 from app.dependencies.staff_auth import invalidate_staff_cache
 from app.models.activity_log import ActivityLog
 from app.models.assignment import Assignment
-from app.models.attendance import AttendanceRecord
+from app.models.attendance import AttendanceRecord, StaffLeave
 from app.models.billing import MonthlyBill
 from app.models.booking import Booking
 from app.models.customer import Customer
 from app.models.employee import Employee
 from app.models.enums import AssignmentStatus, EmployeeStatus
-from app.models.finance import Expense, Payment
+from app.models.finance import Expense, Payment, StaffPayment
 from app.models.location import Location
 from app.models.notification import Notification
 from app.models.push_subscription import PushSubscription
@@ -37,7 +37,13 @@ async def _delete_assignment_dependents(asgn_ids: List[str]) -> None:
     await AttendanceRecord.get_motor_collection().delete_many(
         {"assignment_id": {"$in": asgn_ids}}
     )
+    await StaffLeave.get_motor_collection().delete_many(
+        {"assignment_id": {"$in": asgn_ids}}
+    )
     await Payment.get_motor_collection().delete_many(
+        {"assignment_id": {"$in": asgn_ids}}
+    )
+    await StaffPayment.get_motor_collection().delete_many(
         {"assignment_id": {"$in": asgn_ids}}
     )
     await Notification.get_motor_collection().delete_many(
@@ -107,6 +113,20 @@ async def cascade_delete_location(location_id: str) -> None:
         pay_or.append({"assignment_id": {"$in": asgn_ids}})
     await Payment.get_motor_collection().delete_many({"$or": pay_or})
 
+    sp_or = [{"location_id": location_id}]
+    if emp_ids:
+        sp_or.append({"employee_id": {"$in": emp_ids}})
+    if asgn_ids:
+        sp_or.append({"assignment_id": {"$in": asgn_ids}})
+    await StaffPayment.get_motor_collection().delete_many({"$or": sp_or})
+
+    leave_or = [{"location_id": location_id}]
+    if emp_ids:
+        leave_or.append({"employee_id": {"$in": emp_ids}})
+    if asgn_ids:
+        leave_or.append({"assignment_id": {"$in": asgn_ids}})
+    await StaffLeave.get_motor_collection().delete_many({"$or": leave_or})
+
     await Expense.get_motor_collection().delete_many({"location_id": location_id})
     await Assignment.get_motor_collection().delete_many(asgn_filter)
 
@@ -163,6 +183,8 @@ async def cascade_delete_employee(employee_id: str) -> None:
     await _delete_assignment_dependents(asgn_ids)
 
     await AttendanceRecord.get_motor_collection().delete_many({"employee_id": employee_id})
+    await StaffLeave.get_motor_collection().delete_many({"employee_id": employee_id})
+    await StaffPayment.get_motor_collection().delete_many({"employee_id": employee_id})
     await MonthlyBill.get_motor_collection().delete_many({"employee_id": employee_id})
     await Assignment.get_motor_collection().delete_many({"employee_id": employee_id})
 

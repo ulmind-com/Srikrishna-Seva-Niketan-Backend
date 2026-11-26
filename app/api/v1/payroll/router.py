@@ -21,16 +21,24 @@ from app.core.pagination import PaginationParams, pagination_params
 from app.core.responses import success_response
 from app.dependencies.auth import ActorContext, require_permission
 from app.dependencies.scoping import ensure_can_access
-from app.models.assignment import Assignment
-from app.models.attendance import AttendanceRecord
+from app.models.assignment import Assignment, DutyBreak
+from app.models.attendance import AttendanceRecord, StaffLeave
 from app.models.employee import Employee
-from app.models.enums import AssignmentStatus, AttendanceStatus, StaffVerificationStatus
+from app.models.enums import (
+    AssignmentStatus,
+    AttendanceStatus,
+    LeaveApprovalStatus,
+    StaffVerificationStatus,
+)
 from app.repositories.base import BaseRepository
 from app.schemas.attendance import (
     AttendanceBulkCreate,
     AttendanceCreate,
     AttendanceResponse,
     AttendanceUpdate,
+    StaffLeaveCreate,
+    StaffLeaveResponse,
+    StaffLeaveUpdate,
 )
 from app.services import payroll_service
 from app.services.crud import CrudService
@@ -42,6 +50,7 @@ router = APIRouter(prefix="/payroll", tags=["Payroll"])
 _attendance = CrudService(
     AttendanceRecord, entity="attendance", search_fields=("employee_name", "customer_name"),
 )
+_leaves = CrudService(StaffLeave, entity="staff_leave", search_fields=("employee_name", "customer_name", "reason"))
 _employees: BaseRepository[Employee] = BaseRepository(Employee)
 
 _OCCUPYING = {AssignmentStatus.SCHEDULED, AssignmentStatus.ACTIVE}
@@ -404,3 +413,212 @@ async def get_payroll_run(
     await payroll_service.materialize_from_assignments(first, last, location_ids)
     data = await payroll_service.payroll_run(first, last, days, location_ids)
     return success_response(data=data)
+
+
+# --------------------------------------------------------------------------
+# Staff Leave Management
+# --------------------------------------------------------------------------
+
+
+async def _apply_leave_effects(leave: StaffLeave, emp: Employee, actor: ActorContext) -> None:
+    """Sync an approved leave onto its Assignment break + AttendanceRecord(s)."""
+    from app.api.v1.assignments.router import _recompute_assignment_totals
+
+    end_d = leave.end_date or leave.leave_date
+    asg: Optional[Assignment] = (
+        await Assignment.get(leave.assignment_id) if leave.assignment_id else None
+    )
+
+    if leave.approval_status != LeaveApprovalStatus.APPROVED:
+        if asg and leave.linked_break_id and asg.duty_breaks:
+            asg.duty_breaks = [b for b in asg.duty_breaks if b.id != leave.linked_break_id]
+            _recompute_assignment_totals(asg)
+            asg.touch()
+            await asg.save()
+            leave.linked_break_id = None
+            await leave.save()
+            await payroll_service.sync_assignment_attendance(asg)
+        return
+
+    # Approved leave:
+    note_prefix = "Paid Leave" if not leave.deduct_pay else "Leave"
+    note_txt = f"{note_prefix}: {leave.leave_type.value} — {leave.reason or 'Staff leave'}"
+    rate = (asg.employee_daily_rate if asg and asg.employee_daily_rate is not None else emp.daily_rate) or 0
+
+    if asg is not None:
+        break_id = leave.linked_break_id or f"lv-{str(leave.id)[-6:]}"
+        if leave.deduct_pay:
+            if asg.duty_breaks is None:
+                asg.duty_breaks = []
+            # Replace existing linked break if present
+            asg.duty_breaks = [b for b in asg.duty_breaks if b.id != break_id]
+            b_st = asg.start_time or "08:00"
+            # Full-day break covering [leave_date..end_date] in IST (for 24h ends on end_date+1 at start_time)
+            from app.models.enums import ShiftType
+            brk_end_d = end_d + dt.timedelta(days=1) if asg.shift == ShiftType.FULL_24H else end_d
+            brk_et = b_st if asg.shift == ShiftType.FULL_24H else (asg.end_time or "20:00")
+            asg.duty_breaks.append(
+                DutyBreak(
+                    id=break_id,
+                    start_date=leave.leave_date,
+                    end_date=brk_end_d,
+                    start_time=b_st,
+                    end_time=brk_et,
+                    reason=note_txt,
+                )
+            )
+            leave.linked_break_id = break_id
+            await leave.save()
+            _recompute_assignment_totals(asg)
+            asg.touch()
+            await asg.save()
+            await payroll_service.sync_assignment_attendance(asg)
+        elif leave.linked_break_id and asg.duty_breaks:
+            asg.duty_breaks = [b for b in asg.duty_breaks if b.id != leave.linked_break_id]
+            _recompute_assignment_totals(asg)
+            asg.touch()
+            await asg.save()
+            leave.linked_break_id = None
+            await leave.save()
+
+    # Upsert explicit AttendanceRecord with LEAVE status on each day [leave_date..end_date]
+    d = leave.leave_date
+    while d <= end_d:
+        await _upsert_day(
+            emp,
+            d,
+            status=AttendanceStatus.LEAVE,
+            shift=asg.shift if asg else "full_24h",
+            pay_rate=rate if not leave.deduct_pay else 0,
+            customer_name=asg.customer_name if asg else leave.customer_name,
+            note=note_txt,
+            assignment_id=str(asg.id) if asg else None,
+            start_time=asg.start_time if asg else None,
+            end_time=asg.end_time if asg else None,
+            actor=actor,
+        )
+        d += dt.timedelta(days=1)
+
+
+@router.get("/leaves", summary="List staff leaves")
+async def list_leaves(
+    employee_id: Optional[str] = Query(None),
+    assignment_id: Optional[str] = Query(None),
+    approval_status: Optional[str] = Query(None),
+    start_date: Optional[dt.date] = Query(None),
+    end_date: Optional[dt.date] = Query(None),
+    location_id: Optional[str] = Query(None),
+    actor: ActorContext = Depends(require_permission("payroll", "view")),
+) -> dict:
+    filters: dict = actor.scope_filter()
+    if employee_id:
+        filters["employee_id"] = employee_id
+    if assignment_id:
+        filters["assignment_id"] = assignment_id
+    if approval_status:
+        filters["approval_status"] = approval_status
+    if location_id and actor.can_access_location(location_id):
+        filters["location_id"] = location_id
+    if start_date or end_date:
+        rng: dict = {}
+        if start_date:
+            rng["$gte"] = dt.datetime.combine(start_date, dt.time.min)
+        if end_date:
+            rng["$lte"] = dt.datetime.combine(end_date, dt.time.max)
+        filters["leave_date"] = rng
+
+    docs = await StaffLeave.find(filters).sort("-leave_date", "-created_at").to_list()
+    items = [StaffLeaveResponse.model_validate(d).model_dump(mode="json") for d in docs]
+    return success_response(data={"items": items, "total": len(items)})
+
+
+@router.post("/leaves", status_code=201, summary="Record staff leave")
+async def create_leave(
+    payload: StaffLeaveCreate,
+    actor: ActorContext = Depends(require_permission("payroll", "create")),
+) -> dict:
+    emp = await _employees.get(payload.employee_id)
+    if emp is None:
+        raise BadRequestException("Employee not found")
+    ensure_can_access(actor, emp.location_id)
+
+    end_d = payload.end_date or payload.leave_date
+    if end_d < payload.leave_date:
+        raise BadRequestException("End date cannot be earlier than leave date")
+
+    asg = await Assignment.get(payload.assignment_id) if payload.assignment_id else None
+    data = payload.model_dump(exclude_unset=True)
+    data["end_date"] = end_d
+    data["employee_name"] = emp.name
+    data["location_id"] = (asg.location_id if asg else emp.location_id)
+    if asg:
+        data["customer_name"] = asg.customer_name
+    if data.get("approval_status") == LeaveApprovalStatus.APPROVED and actor.user:
+        data["approved_by"] = actor.user.name
+
+    doc = await _leaves.create(data, actor)
+    await _apply_leave_effects(doc, emp, actor)
+
+    from app.services.dashboard_service import invalidate_dashboard_cache
+    invalidate_dashboard_cache()
+    return item_response(StaffLeaveResponse, doc, "Leave recorded")
+
+
+@router.put("/leaves/{leave_id}", summary="Update leave status / details")
+async def update_leave(
+    leave_id: str,
+    payload: StaffLeaveUpdate,
+    actor: ActorContext = Depends(require_permission("payroll", "update")),
+) -> dict:
+    existing = await _leaves.get_or_404(leave_id)
+    ensure_can_access(actor, existing.location_id)
+    data = payload.model_dump(exclude_unset=True)
+    if data.get("approval_status") == LeaveApprovalStatus.APPROVED and actor.user:
+        data["approved_by"] = actor.user.name
+    doc = await _leaves.update(leave_id, data, actor)
+    emp = await _employees.get(doc.employee_id)
+    if emp:
+        await _apply_leave_effects(doc, emp, actor)
+    from app.services.dashboard_service import invalidate_dashboard_cache
+    invalidate_dashboard_cache()
+    return item_response(StaffLeaveResponse, doc, "Leave updated")
+
+
+@router.delete("/leaves/{leave_id}", summary="Delete leave record")
+async def delete_leave(
+    leave_id: str,
+    actor: ActorContext = Depends(require_permission("payroll", "delete")),
+) -> dict:
+    existing = await _leaves.get_or_404(leave_id)
+    ensure_can_access(actor, existing.location_id)
+
+    if existing.assignment_id and existing.linked_break_id:
+        asg = await Assignment.get(existing.assignment_id)
+        if asg and asg.duty_breaks:
+            from app.api.v1.assignments.router import _recompute_assignment_totals
+            asg.duty_breaks = [b for b in asg.duty_breaks if b.id != existing.linked_break_id]
+            _recompute_assignment_totals(asg)
+            asg.touch()
+            await asg.save()
+            await payroll_service.sync_assignment_attendance(asg)
+
+    end_d = existing.end_date or existing.leave_date
+    await AttendanceRecord.get_motor_collection().delete_many(
+        {
+            "employee_id": existing.employee_id,
+            "status": AttendanceStatus.LEAVE.value,
+            "date": {
+                "$gte": dt.datetime.combine(existing.leave_date, dt.time.min),
+                "$lte": dt.datetime.combine(end_d, dt.time.max),
+            },
+        }
+    )
+    if existing.assignment_id:
+        asg = await Assignment.get(existing.assignment_id)
+        if asg:
+            await payroll_service.sync_assignment_attendance(asg)
+
+    await _leaves.delete(leave_id, actor)
+    from app.services.dashboard_service import invalidate_dashboard_cache
+    invalidate_dashboard_cache()
+    return success_response(message="Leave deleted")

@@ -20,7 +20,12 @@ from pydantic import Field
 
 from app.models.assignment import ShiftWindow
 from app.models.base import TimestampedDocument
-from app.models.enums import AttendanceStatus, ShiftType
+from app.models.enums import (
+    AttendanceStatus,
+    LeaveApprovalStatus,
+    LeaveType,
+    ShiftType,
+)
 
 
 class AttendanceRecord(TimestampedDocument):
@@ -68,4 +73,31 @@ class AttendanceRecord(TimestampedDocument):
             # (employee, date, assignment_id) for synced rows and
             # (employee, date, shift) for hand-marked ones.
             [("employee_id", pymongo.ASCENDING), ("date", pymongo.ASCENDING)],
+        ]
+
+
+class StaffLeave(TimestampedDocument):
+    """Staff leave entry recorded from an assignment or attendance panel."""
+
+    employee_id: Indexed(str)  # type: ignore[valid-type]
+    employee_name: str
+    assignment_id: Optional[str] = None
+    customer_name: Optional[str] = None
+    location_id: Indexed(str)  # type: ignore[valid-type]
+    leave_date: dt.date
+    end_date: Optional[dt.date] = None
+    leave_type: LeaveType = LeaveType.UNPAID
+    deduct_pay: bool = True
+    approval_status: LeaveApprovalStatus = LeaveApprovalStatus.APPROVED
+    reason: Optional[str] = None
+    approved_by: Optional[str] = None
+    linked_break_id: Optional[str] = None
+
+    class Settings:
+        name = "staff_leaves"
+        indexes = [
+            [("location_id", pymongo.ASCENDING)],
+            [("employee_id", pymongo.ASCENDING)],
+            [("assignment_id", pymongo.ASCENDING)],
+            [("leave_date", pymongo.DESCENDING)],
         ]

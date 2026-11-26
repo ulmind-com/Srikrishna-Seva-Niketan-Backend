@@ -41,12 +41,14 @@ async def report_distribution(
     return success_response(data=data)
 
 
-@router.get("/customer-payments", summary="Customer payment report")
+@router.get("/customer-payments", summary="Customer payment & collection report")
 async def report_customer_payments(
+    start: Optional[dt.date] = Query(None),
+    end: Optional[dt.date] = Query(None),
     location_id: Optional[str] = Query(None),
     actor: ActorContext = Depends(require_permission("reports", "view")),
 ) -> dict:
-    data = await report_service.customer_payments(_effective_scope(actor, location_id))
+    data = await report_service.customer_payments(_effective_scope(actor, location_id), start, end)
     return success_response(data=data)
 
 

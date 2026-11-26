@@ -48,7 +48,7 @@ from app.services.email_service import email_service
 from app.services.geo_service import geo_service
 from app.services.notification_service import notification_service
 from app.services.payroll_service import sync_assignment_attendance
-from app.utils.bill_number import format_bill_no, next_sequential_bill_no
+from app.utils.bill_number import format_bill_no, next_receipt_no, next_sequential_bill_no
 from app.utils.ist_time import now_ist, today_ist
 
 logger = logging.getLogger(__name__)
@@ -860,14 +860,18 @@ async def admin_complete_assignment(
         if amount > 0:
             try:
                 from app.models.finance import Payment
+                db = existing.get_motor_collection().database
                 pay = Payment(
+                    receipt_no=await next_receipt_no(db),
                     customer_id=existing.customer_id,
                     customer_name=existing.customer_name,
                     assignment_id=str(existing.id),
+                    bill_no=existing.bill_no,
                     location_id=existing.location_id,
                     amount=amount,
                     mode=PaymentMode.CASH,
                     status=PaymentStatus.PAID,
+                    received_by=actor_name,
                     date=today,
                     note=payload.note or f"Cash recorded by {actor_name} for duty by {emp_name} (Patient: {existing.customer_name})",
                 )

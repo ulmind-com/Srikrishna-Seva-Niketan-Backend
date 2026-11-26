@@ -223,3 +223,21 @@ class ActivityAction(StrEnum):
     REJECT = "reject"
     UPLOAD = "upload"
     EXPORT = "export"
+
+
+class LeaveType(StrEnum):
+    """Category of staff leave."""
+
+    UNPAID = "unpaid"
+    PAID = "paid"
+    SICK = "sick"
+    CASUAL = "casual"
+    EMERGENCY = "emergency"
+
+
+class LeaveApprovalStatus(StrEnum):
+    """Approval status for a staff leave record."""
+
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"

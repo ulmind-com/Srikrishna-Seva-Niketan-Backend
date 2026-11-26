@@ -6,7 +6,7 @@ every collection with Beanie in a single place.
 
 from app.models.activity_log import ActivityLog
 from app.models.assignment import Assignment
-from app.models.attendance import AttendanceRecord
+from app.models.attendance import AttendanceRecord, StaffLeave
 from app.models.blog import Blog, BlogCategory
 from app.models.booking import Booking, Patient
 from app.models.career import CareerJob, JobApplication, JobCategory
@@ -16,7 +16,7 @@ from app.models.employee import Employee
 from app.models.equipment import Equipment, EquipmentCategory, EquipmentRental
 from app.models.faq import FAQ
 from app.models.billing import MonthlyBill
-from app.models.finance import Expense, Payment
+from app.models.finance import Expense, Payment, StaffPayment
 from app.models.elder_care import ElderCareRequest
 from app.models.email_otp import EmailOtp
 from app.models.infection_control import InfectionControlEnquiry, InfectionControlPageContent
@@ -69,8 +69,10 @@ ALL_DOCUMENT_MODELS = [
     Customer,
     Assignment,
     AttendanceRecord,
+    StaffLeave,
     Expense,
     Payment,
+    StaffPayment,
     MonthlyBill,
     EmailOtp,
 ]

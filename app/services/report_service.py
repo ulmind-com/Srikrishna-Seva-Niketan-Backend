@@ -156,6 +156,17 @@ async def profit_loss(
     total_expense = staff_payout + assignment_other + general_expense
     profit = revenue - total_expense
 
+    from app.services import finance_service
+
+    client_ledger = await finance_service.compute_client_ledger(scope, start=start, end=end)
+    cash_received = client_ledger["summary"]["total_received"]
+    outstanding_receivable = max(0, revenue - cash_received)
+    collection_rate_pct = round((cash_received / revenue) * 100, 2) if revenue > 0 else 0.0
+
+    staff_ledger = await finance_service.compute_staff_ledger(scope, start=start, end=end)
+    staff_salary_paid = staff_ledger["summary"]["total_paid"]
+    staff_salary_remaining = max(0, staff_payout - staff_salary_paid)
+
     return {
         "income": revenue,  # alias kept for existing clients
         "revenue": revenue,
@@ -165,6 +176,11 @@ async def profit_loss(
         "expense": total_expense,
         "profit": profit,
         "margin_pct": round(profit / revenue * 100) if revenue else 0,
+        "cash_received": cash_received,
+        "outstanding_receivable": outstanding_receivable,
+        "collection_rate_pct": collection_rate_pct,
+        "staff_salary_paid": staff_salary_paid,
+        "staff_salary_remaining": staff_salary_remaining,
         "expense_by_category": expense_by_category,
         "assignment_count": assignment_count,
         "expense_count": expense_count,
@@ -256,80 +272,37 @@ async def distribution(scope: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-async def customer_payments(scope: Dict[str, Any]) -> Dict[str, Any]:
-    """Per-customer paid totals and pending dues."""
-    # Group payments per customer server-side (paid vs pending, last payment).
-    pay_rows = await Payment.aggregate(
-        [
-            {"$match": _merge(scope)},
-            {
-                "$group": {
-                    "_id": "$customer_id",
-                    "customer_name": {"$first": "$customer_name"},
-                    "total_paid": {
-                        "$sum": {
-                            "$cond": [
-                                {"$ne": ["$status", PaymentStatus.PENDING.value]},
-                                "$amount",
-                                0,
-                            ]
-                        }
-                    },
-                    "pending": {
-                        "$sum": {
-                            "$cond": [
-                                {"$eq": ["$status", PaymentStatus.PENDING.value]},
-                                "$amount",
-                                0,
-                            ]
-                        }
-                    },
-                    "payment_count": {"$sum": 1},
-                    "last_payment": {"$max": "$date"},
-                }
-            },
-        ]
-    ).to_list()
+async def customer_payments(
+    scope: Dict[str, Any],
+    start: Optional[dt.date] = None,
+    end: Optional[dt.date] = None,
+) -> Dict[str, Any]:
+    """Per-customer Billed vs Actual Received vs Outstanding report."""
+    from app.services import finance_service
 
-    # Seed every in-scope customer so zero-payment customers still appear.
-    customers = await Customer.find(_merge(scope)).to_list()
-    by_customer: Dict[str, Dict[str, Any]] = {}
-    for c in customers:
-        by_customer[str(c.id)] = {
-            "customer_id": str(c.id),
-            "customer_name": c.name,
-            "phone": c.phone,
-            "total_paid": 0,
-            "pending": 0,
-            "payment_count": 0,
-            "last_payment": None,
+    ledger = await finance_service.compute_client_ledger(scope, start=start, end=end)
+    summary = ledger["summary"]
+    rows = [
+        {
+            "customer_id": c["customer_id"],
+            "customer_name": c["customer_name"],
+            "phone": c.get("phone"),
+            "bill_no": c.get("bill_no"),
+            "bill_no_formatted": c.get("bill_no_formatted"),
+            "invoiced_amount": c["invoiced_amount"],
+            "total_paid": c["received_amount"],
+            "pending": c["outstanding_amount"],
+            "status": c["status"],
+            "payment_count": c["payment_count"],
+            "last_payment": c.get("last_payment_date"),
         }
-
-    for r in pay_rows:
-        cid = r["_id"]
-        row = by_customer.get(cid)
-        if row is None:
-            row = by_customer.setdefault(
-                cid,
-                {
-                    "customer_id": cid,
-                    "customer_name": r.get("customer_name"),
-                    "phone": None,
-                    "total_paid": 0,
-                    "pending": 0,
-                    "payment_count": 0,
-                    "last_payment": None,
-                },
-            )
-        row["total_paid"] = r["total_paid"]
-        row["pending"] = r["pending"]
-        row["payment_count"] = r["payment_count"]
-        row["last_payment"] = _iso_date(r.get("last_payment"))
-
-    rows = sorted(by_customer.values(), key=lambda r: r["pending"], reverse=True)
+        for c in ledger["clients"]
+    ]
     return {
-        "total_paid": sum(r["total_paid"] for r in rows),
-        "total_pending": sum(r["pending"] for r in rows),
+        "total_billed": summary["total_billed"],
+        "total_paid": summary["total_received"],
+        "total_pending": summary["total_outstanding"],
+        "collection_rate_pct": summary["collection_rate_pct"],
         "customers": rows,
     }
 

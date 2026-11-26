@@ -42,3 +42,25 @@ async def next_sequential_bill_no(db, counter_kind: str) -> int:
         return_document=ReturnDocument.AFTER,
     )
     return int(res["seq"])
+
+
+async def next_receipt_no(db) -> str:
+    """Allocate sequential client receipt number ('RCP-001', 'RCP-002', ...)."""
+    res = await db["counters"].find_one_and_update(
+        {"_id": "payment_receipt_seq"},
+        {"$inc": {"seq": 1}},
+        upsert=True,
+        return_document=ReturnDocument.AFTER,
+    )
+    return f"RCP-{int(res['seq']):03d}"
+
+
+async def next_staff_voucher_no(db) -> str:
+    """Allocate sequential staff payout voucher number ('PAY-001', 'PAY-002', ...)."""
+    res = await db["counters"].find_one_and_update(
+        {"_id": "staff_payment_seq"},
+        {"$inc": {"seq": 1}},
+        upsert=True,
+        return_document=ReturnDocument.AFTER,
+    )
+    return f"PAY-{int(res['seq']):03d}"

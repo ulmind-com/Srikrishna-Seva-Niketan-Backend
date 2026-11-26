@@ -8,7 +8,12 @@ from typing import List, Optional
 from pydantic import BaseModel, Field, computed_field, field_validator
 
 from app.models.assignment import ShiftWindow
-from app.models.enums import AttendanceStatus, ShiftType
+from app.models.enums import (
+    AttendanceStatus,
+    LeaveApprovalStatus,
+    LeaveType,
+    ShiftType,
+)
 from app.schemas.common import IdTimestampSchema
 
 
@@ -111,6 +116,45 @@ class AttendanceUpdate(BaseModel):
     @classmethod
     def _empty_to_none(cls, v):
         return None if v == "" else v
+
+
+class StaffLeaveCreate(BaseModel):
+    employee_id: str
+    assignment_id: Optional[str] = None
+    leave_date: dt.date
+    end_date: Optional[dt.date] = None
+    leave_type: LeaveType = LeaveType.UNPAID
+    deduct_pay: bool = True
+    approval_status: LeaveApprovalStatus = LeaveApprovalStatus.APPROVED
+    reason: Optional[str] = Field(None, max_length=1000)
+
+    @field_validator("leave_date", "end_date", mode="before")
+    @classmethod
+    def _validate_leave_dates(cls, v):
+        return _parse_flexible_date(v)
+
+
+class StaffLeaveUpdate(BaseModel):
+    leave_type: Optional[LeaveType] = None
+    deduct_pay: Optional[bool] = None
+    approval_status: Optional[LeaveApprovalStatus] = None
+    reason: Optional[str] = Field(None, max_length=1000)
+
+
+class StaffLeaveResponse(IdTimestampSchema):
+    employee_id: str
+    employee_name: str
+    assignment_id: Optional[str] = None
+    customer_name: Optional[str] = None
+    location_id: str
+    leave_date: dt.date
+    end_date: Optional[dt.date] = None
+    leave_type: LeaveType
+    deduct_pay: bool
+    approval_status: LeaveApprovalStatus
+    reason: Optional[str] = None
+    approved_by: Optional[str] = None
+    linked_break_id: Optional[str] = None
 
 
 class AttendanceResponse(IdTimestampSchema):
