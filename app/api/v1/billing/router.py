@@ -82,14 +82,17 @@ async def _compute_bills(
     m_end_dt = dt.datetime.combine(end_date, dt.time.max)
 
     filters: dict = actor.scope_filter()
-    # Only active, scheduled, completed assignments (exclude cancelled)
+    # Only include assignments whose work has ended (end_date set or completed/replaced; exclude ongoing/cancelled).
     filters["status"] = {"$ne": "cancelled"}
     if location_id and actor.can_access_location(location_id):
         filters["location_id"] = location_id
     if customer_id:
         filters["customer_id"] = customer_id
     filters["start_date"] = {"$lte": m_end_dt}
-    filters["$or"] = [{"end_date": None}, {"end_date": {"$gte": m_start_dt}}]
+    filters["$or"] = [
+        {"end_date": {"$ne": None, "$gte": m_start_dt}},
+        {"status": {"$in": [AssignmentStatus.COMPLETED.value, AssignmentStatus.REPLACED.value]}},
+    ]
 
     assignments = await Assignment.find(filters).to_list()
 
@@ -122,6 +125,9 @@ async def _compute_bills(
     # even when duty was split across multiple staff members (e.g. replacement).
     groups: dict[str, dict] = {}
     for a in assignments:
+        # Do not generate a bill for ongoing duties whose work hasn't finished yet.
+        if a.end_date is None and a.status not in (AssignmentStatus.COMPLETED, AssignmentStatus.REPLACED):
+            continue
         clipped_start = a.start_date < start_date
         clipped_end = a.end_date is None or a.end_date > end_date
         row_start = max(a.start_date, start_date)

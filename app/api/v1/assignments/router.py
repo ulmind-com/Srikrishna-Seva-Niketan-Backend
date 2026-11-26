@@ -785,6 +785,13 @@ async def issue_bill(
     """
     doc = await _assignments.get_or_404(assignment_id)
     ensure_can_access(actor, doc.location_id)
+    if doc.end_date is None and doc.status not in (
+        AssignmentStatus.COMPLETED,
+        AssignmentStatus.REPLACED,
+    ):
+        raise BadRequestException(
+            "Bill cannot be generated yet — set an end date or mark the work completed first."
+        )
     if doc.bill_no is None:
         doc.bill_no = await _next_bill_no()
         doc.touch()

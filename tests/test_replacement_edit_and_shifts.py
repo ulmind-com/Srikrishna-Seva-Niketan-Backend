@@ -384,16 +384,43 @@ async def test_general_bill_handover_dates_times_and_days(
     assert li1["to_time"] == "07:00"
     assert li1["days"] == 14.0
 
-    # 4. General Bill for full month Nov 1 to Nov 30: Staff 1 = 14 days, Staff 2 = 16 days => 30 days
+    # 4. General Bill for Nov 1..30 must NOT bill ongoing emp2 yet (no end_date / not completed)!
+    bill_full_ongoing = await client.get(
+        f"/api/v1/billing/monthly?start_date=2026-11-01&end_date=2026-11-30&customer_id={cust_id}",
+        headers=auth_headers,
+    )
+    assert bill_full_ongoing.status_code == 200, bill_full_ongoing.text
+    b_ongoing = bill_full_ongoing.json()["data"]["bills"][0]
+    assert b_ongoing["total_days"] == 14.0
+    assert b_ongoing["total_amount"] == 14000
+    assert len(b_ongoing["line_items"]) == 1
+
+    # Issuing an individual bill for ongoing emp2 before work ends must also fail cleanly (400)
+    a2_id = rep.json()["data"]["new_assignment"]["id"]
+    issue_ongoing = await client.post(f"/api/v1/assignments/{a2_id}/issue-bill", headers=auth_headers)
+    assert issue_ongoing.status_code == 400
+
+    # 5. Once emp2 gets an end_date (Nov 30 07:00 AM), BOTH Staff 1 (14d) & Staff 2 (15d) are billed!
+    upd2 = await client.put(
+        f"/api/v1/assignments/{a2_id}",
+        json={"end_date": "2026-11-30", "end_time": "07:00"},
+        headers=auth_headers,
+    )
+    assert upd2.status_code == 200, upd2.text
+
     bill_full = await client.get(
         f"/api/v1/billing/monthly?start_date=2026-11-01&end_date=2026-11-30&customer_id={cust_id}",
         headers=auth_headers,
     )
     assert bill_full.status_code == 200, bill_full.text
     b_full = bill_full.json()["data"]["bills"][0]
-    assert b_full["total_days"] == 30.0
-    assert b_full["total_amount"] == 30000
-    assert [li["days"] for li in b_full["line_items"]] == [14.0, 16.0]
+    assert b_full["total_days"] == 29.0
+    assert b_full["total_amount"] == 29000
+    assert [li["days"] for li in b_full["line_items"]] == [14.0, 15.0]
     assert b_full["line_items"][1]["from_time"] == "07:00"
-    assert b_full["line_items"][1]["to_time"] is None
+    assert b_full["line_items"][1]["to_time"] == "07:00"
+
+    issue_done = await client.post(f"/api/v1/assignments/{a2_id}/issue-bill", headers=auth_headers)
+    assert issue_done.status_code == 200, issue_done.text
+    assert issue_done.json()["data"]["bill_no"] >= 1000
 
