@@ -55,6 +55,7 @@ class Assignment(TimestampedDocument):
     # nursing home, etc. ``place_name`` carries the hospital / nursing-home name.
     place_type: AssignmentPlace = AssignmentPlace.HOME
     place_name: Optional[str] = None
+    purpose: Optional[str] = None
     address: Optional[str] = None
 
     shift: ShiftType = ShiftType.FULL_24H

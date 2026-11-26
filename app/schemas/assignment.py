@@ -228,6 +228,7 @@ class AssignmentCreate(BaseModel):
     employee_id: str
     place_type: AssignmentPlace = AssignmentPlace.HOME
     place_name: Optional[str] = Field(None, max_length=200)
+    purpose: Optional[str] = Field(None, max_length=300)
     address: Optional[str] = Field(None, max_length=500)
     shift: ShiftType = ShiftType.FULL_24H
     # Custom shift window, "HH:MM" 24-hour (used when shift == custom).
@@ -268,6 +269,7 @@ class AssignmentCreate(BaseModel):
         "dest_lat",
         "dest_lng",
         "place_name",
+        "purpose",
         "address",
         "notes",
         "start_time",
@@ -285,6 +287,7 @@ class AssignmentCreate(BaseModel):
 class AssignmentUpdate(BaseModel):
     place_type: Optional[AssignmentPlace] = None
     place_name: Optional[str] = Field(None, max_length=200)
+    purpose: Optional[str] = Field(None, max_length=300)
     address: Optional[str] = Field(None, max_length=500)
     shift: Optional[ShiftType] = None
     start_time: Optional[str] = Field(None, max_length=5)
@@ -324,6 +327,7 @@ class AssignmentUpdate(BaseModel):
         "dest_lat",
         "dest_lng",
         "place_name",
+        "purpose",
         "address",
         "notes",
         "start_time",
@@ -345,6 +349,7 @@ class AssignmentResponse(IdTimestampSchema):
     location_id: Optional[str] = None
     place_type: AssignmentPlace = AssignmentPlace.HOME
     place_name: Optional[str] = None
+    purpose: Optional[str] = None
     address: Optional[str] = None
     shift: ShiftType
     start_time: Optional[str] = None
@@ -472,6 +477,7 @@ class StaffAssignmentResponse(IdTimestampSchema):
     customer_phone: Optional[str] = None
     place_type: AssignmentPlace = AssignmentPlace.HOME
     place_name: Optional[str] = None
+    purpose: Optional[str] = None
     address: Optional[str] = None
     shift: ShiftType
     start_time: Optional[str] = None

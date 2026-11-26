@@ -939,6 +939,7 @@ class MultiStaffAssignmentRequest(BaseModel):
     location_id: Optional[str] = None
     place_type: AssignmentPlace = AssignmentPlace.HOME
     place_name: Optional[str] = None
+    purpose: Optional[str] = None
     address: Optional[str] = None
     dest_lat: Optional[float] = None
     dest_lng: Optional[float] = None
@@ -1033,6 +1034,7 @@ async def _perform_staff_replacement(
         "location_id": existing.location_id,
         "place_type": existing.place_type,
         "place_name": existing.place_name,
+        "purpose": existing.purpose,
         "address": existing.address,
         "dest_lat": existing.dest_lat,
         "dest_lng": existing.dest_lng,
@@ -1234,6 +1236,7 @@ async def multi_staff_assign(
             "location_id": loc_id,
             "place_type": payload.place_type,
             "place_name": payload.place_name or "",
+            "purpose": payload.purpose,
             "address": payload.address or customer.address or "",
             "dest_lat": payload.dest_lat or customer.lat,
             "dest_lng": payload.dest_lng or customer.lng,
