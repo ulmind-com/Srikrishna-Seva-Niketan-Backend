@@ -116,6 +116,7 @@ def _derive_amounts(
     existing_cdr: Optional[int] = None,
     existing_edr: Optional[int] = None,
     days_worked: Optional[float] = None,
+    existing: Optional[Assignment] = None,
 ) -> dict:
     """Set stored totals from the per-day rates: total = daily_rate × total_days.
 
@@ -124,18 +125,41 @@ def _derive_amounts(
     explicit ``customer_rate`` / ``employee_payout`` in the payload always wins.
     Open-ended engagements keep null totals and are billed per calendar month.
     """
-    if not (start and end):
+    if not start:
         return data
-    if days_worked is not None and days_worked > 0:
+    if not end:
+        # Clearing end_date on edit turns a closed engagement back into ongoing.
+        if existing is not None and "end_date" in data and data["end_date"] is None:
+            data.setdefault("days_worked", None)
+            data.setdefault("customer_rate", None)
+            data.setdefault("employee_payout", None)
+        return data
+
+    if days_worked is not None and days_worked >= 0:
         total_days = days_worked
-    elif data.get("days_worked") is not None and float(data["days_worked"]) > 0:
+    elif "days_worked" in data and data["days_worked"] is not None:
         total_days = float(data["days_worked"])
     else:
-        st = data.get("start_time")
-        et = data.get("end_time")
-        shift = data.get("shift", ShiftType.FULL_24H)
-        total_days = calculate_duty_days(start, end, st, et, shift)
-    if total_days <= 0:
+        st = data.get("start_time") if "start_time" in data else (existing.start_time if existing else None)
+        et = data.get("end_time") if "end_time" in data else (existing.end_time if existing else None)
+        shift = data.get("shift") if "shift" in data else (existing.shift if existing else ShiftType.FULL_24H)
+        windows = data.get("shift_windows") if "shift_windows" in data else (existing.shift_windows if existing else None)
+        breaks = data.get("duty_breaks") if "duty_breaks" in data else (existing.duty_breaks if existing else None)
+        status_val = data.get("status") if "status" in data else (existing.status if existing else None)
+        total_days = calculate_duty_days(
+            start,
+            end,
+            st,
+            et,
+            shift,
+            breaks,
+            windows,
+            is_handover=(status_val == AssignmentStatus.REPLACED),
+        )
+        if "days_worked" not in data:
+            data["days_worked"] = total_days
+
+    if total_days < 0:
         return data
     cdr = data.get("customer_daily_rate", existing_cdr)
     edr = data.get("employee_daily_rate", existing_edr)
@@ -144,6 +168,133 @@ def _derive_amounts(
     if edr is not None and "employee_payout" not in data:
         data["employee_payout"] = int(round(edr * total_days))
     return data
+
+
+def _recompute_assignment_totals(asg: Assignment) -> float:
+    """Recompute days_worked, customer_rate, and employee_payout on an Assignment."""
+    if not asg.end_date or asg.end_date < asg.start_date:
+        duty_days = 0.0
+    else:
+        duty_days = calculate_duty_days(
+            asg.start_date,
+            asg.end_date,
+            asg.start_time,
+            asg.end_time,
+            asg.shift,
+            asg.duty_breaks,
+            asg.shift_windows,
+            is_handover=(asg.status == AssignmentStatus.REPLACED),
+        )
+    asg.days_worked = duty_days
+    if asg.customer_daily_rate is not None:
+        asg.customer_rate = int(round(asg.customer_daily_rate * duty_days))
+    if asg.employee_daily_rate is not None:
+        asg.employee_payout = int(round(asg.employee_daily_rate * duty_days))
+    return duty_days
+
+
+async def _prune_attendance_outside_span(
+    assignment_id: str,
+    start_date: dt.date,
+    end_date: Optional[dt.date],
+) -> None:
+    """Remove attendance logs that fall outside an edited assignment's date range."""
+    try:
+        or_clauses: list[dict] = [
+            {"date": {"$lt": dt.datetime.combine(start_date, dt.time.min)}},
+        ]
+        if end_date is not None:
+            or_clauses.append({"date": {"$gt": dt.datetime.combine(end_date, dt.time.max)}})
+        await AttendanceRecord.get_motor_collection().delete_many(
+            {"assignment_id": assignment_id, "$or": or_clauses}
+        )
+    except Exception as exc:
+        logger.warning("Failed to prune attendance outside updated span for %s: %s", assignment_id, exc)
+
+
+async def _sync_replacement_chain(
+    doc: Assignment,
+    prev_snapshot: Assignment,
+) -> None:
+    """Keep handover dates/times and totals synced between replaced and replacement assignments."""
+    # 1. Editing a replacement assignment's start_date / start_time syncs back to predecessor's end.
+    start_changed = (
+        doc.start_date != prev_snapshot.start_date
+        or doc.start_time != prev_snapshot.start_time
+    )
+    if doc.is_replacement and start_changed:
+        pred: Optional[Assignment] = None
+        if doc.replacement_for_assignment_id:
+            pred = await Assignment.get(doc.replacement_for_assignment_id)
+        if pred is None and doc.replacement_for_employee_id:
+            pred = (
+                await Assignment.find(
+                    {
+                        "customer_id": doc.customer_id,
+                        "employee_id": doc.replacement_for_employee_id,
+                        "replaced_by_employee_id": doc.employee_id,
+                        "status": {"$in": [AssignmentStatus.REPLACED.value, AssignmentStatus.CANCELLED.value]},
+                    }
+                )
+                .sort("-updated_at")
+                .first_or_none()
+            )
+            if pred is not None:
+                doc.replacement_for_assignment_id = str(pred.id)
+                doc.touch()
+                await doc.save()
+
+        if pred is not None and str(pred.id) != str(doc.id):
+            pred.end_date = doc.start_date
+            if doc.start_time:
+                pred.end_time = doc.start_time
+            if pred.end_date < pred.start_date:
+                pred.status = AssignmentStatus.CANCELLED
+                pred.days_worked = 0.0
+                if pred.customer_daily_rate is not None:
+                    pred.customer_rate = 0
+                if pred.employee_daily_rate is not None:
+                    pred.employee_payout = 0
+            else:
+                if pred.status == AssignmentStatus.CANCELLED:
+                    pred.status = AssignmentStatus.REPLACED
+                _recompute_assignment_totals(pred)
+            pred.touch()
+            await pred.save()
+            await _prune_attendance_outside_span(str(pred.id), pred.start_date, pred.end_date)
+
+        await _prune_attendance_outside_span(str(doc.id), doc.start_date, doc.end_date)
+
+    # 2. Editing a replaced predecessor's end_date / end_time syncs forward to successor's start.
+    end_changed = (
+        doc.end_date != prev_snapshot.end_date
+        or doc.end_time != prev_snapshot.end_time
+    )
+    if doc.replaced_by_employee_id and end_changed and doc.end_date is not None:
+        succ = await Assignment.find(
+            {"replacement_for_assignment_id": str(doc.id)}
+        ).first_or_none()
+        if succ is None:
+            succ = (
+                await Assignment.find(
+                    {
+                        "customer_id": doc.customer_id,
+                        "employee_id": doc.replaced_by_employee_id,
+                        "is_replacement": True,
+                    }
+                )
+                .sort("-created_at")
+                .first_or_none()
+            )
+        if succ is not None and str(succ.id) != str(doc.id):
+            succ.start_date = doc.end_date
+            if doc.end_time:
+                succ.start_time = doc.end_time
+            if succ.end_date is not None:
+                _recompute_assignment_totals(succ)
+            succ.touch()
+            await succ.save()
+            await _prune_attendance_outside_span(str(succ.id), succ.start_date, succ.end_date)
 
 
 async def _check_employee_conflict(
@@ -530,13 +681,24 @@ async def update_assignment(
             data["end_date"] = start_d + dt.timedelta(days=1)
         else:
             data["end_date"] = start_d
-    # Recompute stored totals when the dates or per-day rates change.
+    prev_schedule = type(
+        "_ScheduleSnapshot",
+        (),
+        {
+            "start_date": existing.start_date,
+            "start_time": existing.start_time,
+            "end_date": existing.end_date,
+            "end_time": existing.end_time,
+        },
+    )()
+    # Recompute stored totals when the dates, times, shift, or per-day rates change.
     _derive_amounts(
         data,
         data.get("start_date") or existing.start_date,
         data.get("end_date") if "end_date" in data else existing.end_date,
         existing.customer_daily_rate,
         existing.employee_daily_rate,
+        existing=existing,
     )
     # Re-geocode if the posting address changed and no explicit pin was given
     if "address" in data and "dest_lat" not in data and data["address"] != existing.address:
@@ -561,6 +723,7 @@ async def update_assignment(
             )
 
     doc = await _assignments.update(assignment_id, data, actor)
+    await _sync_replacement_chain(doc, prev_schedule)
 
     # Keep the staff member's availability in sync + tell them about status changes.
     if "status" in data:
@@ -664,21 +827,7 @@ async def admin_complete_assignment(
         if not existing.end_time:
             existing.end_time = now.strftime("%H:%M")
 
-    eff_days = calculate_duty_days(
-        existing.start_date,
-        existing.end_date,
-        existing.start_time,
-        existing.end_time,
-        existing.shift,
-    )
-    if eff_days <= 0:
-        eff_days = max(1.0, float((existing.end_date - existing.start_date).days + 1))
-    existing.days_worked = eff_days
-
-    if existing.customer_rate is None and existing.customer_daily_rate:
-        existing.customer_rate = int(round(existing.customer_daily_rate * eff_days))
-    if existing.employee_payout is None and existing.employee_daily_rate:
-        existing.employee_payout = int(round(existing.employee_daily_rate * eff_days))
+    eff_days = _recompute_assignment_totals(existing)
 
     ptype = str(getattr(existing, "payment_type", "prepaid"))
     is_postpaid = (ptype == "postpaid")
@@ -848,23 +997,8 @@ async def _perform_staff_replacement(
         if payload.start_time:
             existing.end_time = payload.start_time
 
-        duty_days = calculate_duty_days(
-            existing.start_date,
-            old_end_date,
-            existing.start_time,
-            existing.end_time,
-            existing.shift,
-        )
-        if duty_days <= 0:
-            duty_days = max(1.0, float((old_end_date - existing.start_date).days + 1))
-        existing.days_worked = duty_days
-
-        if existing.customer_daily_rate:
-            existing.customer_rate = int(round(existing.customer_daily_rate * duty_days))
-        if existing.employee_daily_rate:
-            existing.employee_payout = int(round(existing.employee_daily_rate * duty_days))
-
         existing.status = AssignmentStatus.REPLACED
+        duty_days = _recompute_assignment_totals(existing)
         if old_end_date <= today:
             await _set_employee_status(existing.employee_id, EmployeeStatus.AVAILABLE)
 
@@ -915,6 +1049,7 @@ async def _perform_staff_replacement(
         "payment_type": existing.payment_type,
         "payment_status": PaymentStatus.PENDING,
         "is_replacement": True,
+        "replacement_for_assignment_id": str(existing.id),
         "replacement_for_employee_id": existing.employee_id,
         "replacement_for_employee_name": existing.employee_name,
         "replacement_reason": payload.reason,
@@ -1229,19 +1364,7 @@ async def add_duty_break(
     assignment.duty_breaks.append(new_break)
 
     # Recalculate days worked and rates
-    duty_days = calculate_duty_days(
-        assignment.start_date,
-        assignment.end_date,
-        assignment.start_time,
-        assignment.end_time,
-        assignment.shift,
-        assignment.duty_breaks,
-    )
-    assignment.days_worked = duty_days
-    if assignment.customer_daily_rate is not None:
-        assignment.customer_rate = int(round(assignment.customer_daily_rate * duty_days))
-    if assignment.employee_daily_rate is not None:
-        assignment.employee_payout = int(round(assignment.employee_daily_rate * duty_days))
+    _recompute_assignment_totals(assignment)
 
     assignment.touch()
     await assignment.save()
@@ -1293,19 +1416,7 @@ async def remove_duty_break(
 
     assignment.duty_breaks = [b for b in assignment.duty_breaks if b.id != break_id]
 
-    duty_days = calculate_duty_days(
-        assignment.start_date,
-        assignment.end_date,
-        assignment.start_time,
-        assignment.end_time,
-        assignment.shift,
-        assignment.duty_breaks,
-    )
-    assignment.days_worked = duty_days
-    if assignment.customer_daily_rate is not None:
-        assignment.customer_rate = int(round(assignment.customer_daily_rate * duty_days))
-    if assignment.employee_daily_rate is not None:
-        assignment.employee_payout = int(round(assignment.employee_daily_rate * duty_days))
+    _recompute_assignment_totals(assignment)
 
     assignment.touch()
     await assignment.save()

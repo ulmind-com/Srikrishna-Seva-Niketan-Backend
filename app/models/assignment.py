@@ -104,6 +104,7 @@ class Assignment(TimestampedDocument):
 
     # Staff replacement / duty handover tracking:
     is_replacement: bool = False
+    replacement_for_assignment_id: Optional[str] = None
     replacement_for_employee_id: Optional[str] = None
     replacement_for_employee_name: Optional[str] = None
     replaced_by_employee_id: Optional[str] = None

@@ -23,6 +23,7 @@ from app.models.assignment import Assignment
 from app.models.billing import MonthlyBill
 from app.models.customer import Customer
 from app.models.employee import Employee
+from app.models.enums import AssignmentStatus
 from app.models.location import Location
 from app.schemas.assignment import _format_shift, calculate_duty_days
 
@@ -131,19 +132,26 @@ async def _compute_bills(
             and a.end_date
             and a.end_date <= end_date
             and a.days_worked is not None
-            and a.days_worked > 0
+            and a.days_worked >= 0
         ):
             days = float(a.days_worked)
         else:
             days = calculate_duty_days(
-                row_start, row_end, a.start_time, a.end_time, a.shift, a.duty_breaks
+                row_start,
+                row_end,
+                a.start_time,
+                a.end_time,
+                a.shift,
+                a.duty_breaks,
+                a.shift_windows,
+                is_handover=(a.status == AssignmentStatus.REPLACED),
             )
 
         if days <= 0:
             continue
 
         rate = _daily_rate(a)
-        if a.days_worked and a.days_worked == days and a.customer_rate:
+        if a.days_worked is not None and a.days_worked == days and a.customer_rate is not None:
             amount = a.customer_rate
         else:
             amount = int(round(rate * days))

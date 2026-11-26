@@ -94,6 +94,8 @@ def _calculate_raw_duty_days(
     start_time: Optional[str] = None,
     end_time: Optional[str] = None,
     shift: ShiftType = ShiftType.FULL_24H,
+    shift_windows: Optional[Sequence[Any]] = None,
+    is_handover: bool = False,
 ) -> float:
     """Calculate the base duty days without deducting breaks."""
     if not end_date:
@@ -101,33 +103,43 @@ def _calculate_raw_duty_days(
     if end_date < start_date:
         return 0.0
 
-    calendar_days = (end_date - start_date).days + 1
+    cal_diff = (end_date - start_date).days
+    calendar_days = cal_diff + 1
 
     if start_time and end_time:
         try:
             st_h, st_m = map(int, start_time.split(":")[:2])
             et_h, et_m = map(int, end_time.split(":")[:2])
-            st_dt = dt.datetime.combine(start_date, dt.time(st_h, st_m))
-            et_dt = dt.datetime.combine(end_date, dt.time(et_h, et_m))
 
-            diff_seconds = (et_dt - st_dt).total_seconds()
-            if diff_seconds > 0:
-                hours = diff_seconds / 3600.0
-                if shift == ShiftType.FULL_24H:
-                    raw_days = hours / 24.0
-                    duty_days = round(raw_days * 2) / 2
+            if shift == ShiftType.FULL_24H:
+                st_dt = dt.datetime.combine(start_date, dt.time(st_h, st_m))
+                et_dt = dt.datetime.combine(end_date, dt.time(et_h, et_m))
+                diff_seconds = (et_dt - st_dt).total_seconds()
+                if diff_seconds > 0:
+                    duty_days = round((diff_seconds / 3600.0 / 24.0) * 2) / 2
                     if duty_days > 0:
                         return duty_days
-                elif shift in (ShiftType.DAY, ShiftType.NIGHT, ShiftType.MORNING):
-                    raw_shifts = hours / 12.0
-                    duty_days = round(raw_shifts * 2) / 2
-                    if duty_days > 0:
-                        return duty_days
-                else:
-                    raw_days = hours / 24.0
-                    duty_days = round(raw_days * 2) / 2
-                    if duty_days > 0:
-                        return duty_days
+                elif is_handover and diff_seconds == 0:
+                    return 0.0
+            else:
+                st_mins = st_h * 60 + st_m
+                et_mins = et_h * 60 + et_m
+                if cal_diff == 0:
+                    if is_handover and et_mins == st_mins:
+                        return 0.0
+                    return 1.0
+                if et_mins == st_mins:
+                    return float(cal_diff)
+                if et_mins < st_mins:
+                    # Multi-window custom duty explicitly spanning consecutive calendar days
+                    if shift == ShiftType.CUSTOM and shift_windows and cal_diff == 1 and len(shift_windows) >= 2:
+                        return float(max(calendar_days, len(shift_windows)))
+                    # Overnight shift ending next morning or handover before shift start
+                    return float(cal_diff)
+                # et_mins > st_mins
+                if is_handover and shift in (ShiftType.DAY, ShiftType.NIGHT) and (et_mins - st_mins) <= 6 * 60:
+                    return float(cal_diff) + 0.5
+                return float(calendar_days)
         except Exception:
             pass
 
@@ -141,6 +153,8 @@ def calculate_duty_days(
     end_time: Optional[str] = None,
     shift: ShiftType = ShiftType.FULL_24H,
     duty_breaks: Optional[Sequence[Any]] = None,
+    shift_windows: Optional[Sequence[Any]] = None,
+    is_handover: bool = False,
 ) -> float:
     """Calculate the net payable duty days, deducting any temporary breaks / pause."""
     if not end_date:
@@ -148,7 +162,9 @@ def calculate_duty_days(
     if end_date < start_date:
         return 0.0
 
-    gross_days = _calculate_raw_duty_days(start_date, end_date, start_time, end_time, shift)
+    gross_days = _calculate_raw_duty_days(
+        start_date, end_date, start_time, end_time, shift, shift_windows, is_handover
+    )
     if not duty_breaks:
         return gross_days
 
@@ -355,6 +371,7 @@ class AssignmentResponse(IdTimestampSchema):
     other_expense: Optional[int] = None
     bill_no: Optional[int] = None
     is_replacement: bool = False
+    replacement_for_assignment_id: Optional[str] = None
     replacement_for_employee_id: Optional[str] = None
     replacement_for_employee_name: Optional[str] = None
     replaced_by_employee_id: Optional[str] = None
@@ -381,7 +398,16 @@ class AssignmentResponse(IdTimestampSchema):
             return self.days_worked
         if self.end_date is None:
             return None
-        return calculate_duty_days(self.start_date, self.end_date, self.start_time, self.end_time, self.shift, self.duty_breaks)
+        return calculate_duty_days(
+            self.start_date,
+            self.end_date,
+            self.start_time,
+            self.end_time,
+            self.shift,
+            self.duty_breaks,
+            self.shift_windows,
+            is_handover=(self.status == AssignmentStatus.REPLACED),
+        )
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -422,8 +448,10 @@ class AssignmentResponse(IdTimestampSchema):
                 self.end_time,
                 self.shift,
                 self.duty_breaks,
+                self.shift_windows,
+                is_handover=(self.status == AssignmentStatus.REPLACED),
             )
-            if duty_days > 0:
+            if duty_days > 0 or self.status in (AssignmentStatus.REPLACED, AssignmentStatus.CANCELLED):
                 self.days_worked = duty_days
                 if self.customer_daily_rate is not None:
                     self.customer_rate = int(round(self.customer_daily_rate * duty_days))
