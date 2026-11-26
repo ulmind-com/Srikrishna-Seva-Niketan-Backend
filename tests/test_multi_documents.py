@@ -82,13 +82,22 @@ async def test_employee_and_customer_multiple_documents(
     assert res_upd.status_code == 200
     assert len(res_upd.json()["data"]["documents"]) == 4
 
-    # 3. Create Customer with Aadhaar + PAN
+    # 3. Create Customer with Aadhaar + PAN (including PDF attachment)
     cust_payload = {
         "name": "Multi Doc Client",
         "phone": "9800011122",
         "location_id": loc_id,
         "documents": [
-            {"doc_type": "Aadhaar", "doc_number": "9999 8888 7777"},
+            {
+                "doc_type": "Aadhaar",
+                "doc_number": "9999 8888 7777",
+                "file": {
+                    "url": "https://example.com/aadhaar.pdf",
+                    "format": "pdf",
+                    "original_filename": "aadhaar.pdf",
+                    "resource_type": "raw",
+                },
+            },
             {"doc_type": "PAN", "doc_number": "ZZZZZ9999Z", "file": {"url": "https://example.com/cpan.jpg"}},
         ],
     }
@@ -96,6 +105,8 @@ async def test_employee_and_customer_multiple_documents(
     assert res_cust.status_code == 201
     cust_data = res_cust.json()["data"]
     assert len(cust_data["documents"]) == 2
+    assert cust_data["documents"][0]["file"]["format"] == "pdf"
+    assert cust_data["documents"][0]["file"]["original_filename"] == "aadhaar.pdf"
     assert cust_data["id_proof_type"] == "Aadhaar"
     assert cust_data["id_proof_number"] == "9999 8888 7777"
 

@@ -52,7 +52,7 @@ class TimestampedDocument(Document):
 
 
 class ImageAsset(BaseModel):
-    """A Cloudinary-backed image reference."""
+    """A Cloudinary-backed image (or document PDF) reference."""
 
     url: str
     public_id: Optional[str] = None
@@ -60,6 +60,8 @@ class ImageAsset(BaseModel):
     height: Optional[int] = None
     format: Optional[str] = None
     alt: Optional[str] = None
+    original_filename: Optional[str] = None
+    resource_type: Optional[str] = None
 
     @model_validator(mode="before")
     @classmethod
