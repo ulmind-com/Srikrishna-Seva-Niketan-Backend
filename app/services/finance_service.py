@@ -312,8 +312,9 @@ async def compute_staff_ledger(
     start: Optional[dt.date] = None,
     end: Optional[dt.date] = None,
     location_id: Optional[str] = None,
+    employee_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Staff-wise Salary Due vs Actual Paid vs Remaining balance (supports partial payouts)."""
+    """Staff-wise Salary Due vs Actual Paid vs Remaining balance (supports partial payouts & date ranges)."""
     from app.services import payroll_service
 
     loc_ids: Optional[List[str]] = None
@@ -323,6 +324,7 @@ async def compute_staff_ledger(
         v = scope["location_id"]
         loc_ids = v.get("$in") if isinstance(v, dict) else [v]
 
+    has_custom_range = bool(start and end)
     if start and end:
         first, last = start, end
         days = (end - start).days + 1
@@ -332,21 +334,57 @@ async def compute_staff_ledger(
         eff_month = f"{first.year:04d}-{first.month:02d}"
 
     await payroll_service.materialize_from_assignments(first, last, loc_ids)
-    run_data = await payroll_service.payroll_run(first, last, days, loc_ids)
+    run_data = await payroll_service.payroll_run(
+        first, last, days, loc_ids, is_custom_range=has_custom_range
+    )
     payroll_rows = run_data.get("rows", [])
 
-    # Fetch StaffPayment payouts for this month or date window
+    # Fetch StaffPayment payouts for this month or exact bank-statement date window
     sp_filter: Dict[str, Any] = {**(scope or {})}
     if location_id:
         sp_filter["location_id"] = location_id
+    if employee_id:
+        sp_filter["employee_id"] = employee_id
     all_sp = await StaffPayment.find(sp_filter).sort("-date", "-created_at").to_list()
 
     sp_by_emp: Dict[str, List[StaffPayment]] = {}
     for sp in all_sp:
-        matches_month = (sp.month == eff_month) if (sp.month and not (start and end)) else False
-        matches_range = first <= sp.date <= last
-        if matches_month or (not sp.month and matches_range) or (start and end and matches_range):
-            sp_by_emp.setdefault(sp.employee_id, []).append(sp)
+        sp_date = sp.date.date() if isinstance(sp.date, dt.datetime) else sp.date
+        matches_range = first <= sp_date <= last
+        if has_custom_range:
+            if matches_range:
+                sp_by_emp.setdefault(sp.employee_id, []).append(sp)
+        else:
+            matches_month = (sp.month == eff_month) if sp.month else False
+            if matches_month or (not sp.month and matches_range):
+                sp_by_emp.setdefault(sp.employee_id, []).append(sp)
+
+    # Ensure any employee who received payouts in this period (even if inactive/unlisted) is included
+    payroll_by_emp = {r["employee_id"]: r for r in payroll_rows}
+    missing_emp_ids = [eid for eid in sp_by_emp if eid not in payroll_by_emp]
+    if missing_emp_ids:
+        extra_emps = await Employee.find({"_id": {"$in": _oids(missing_emp_ids)}}).to_list()
+        extra_map = {str(e.id): e for e in extra_emps}
+        for eid in missing_emp_ids:
+            emp_doc = extra_map.get(eid)
+            first_sp = sp_by_emp[eid][0]
+            payroll_rows.append(
+                {
+                    "employee_id": eid,
+                    "name": emp_doc.name if emp_doc else first_sp.employee_name,
+                    "code": emp_doc.code if emp_doc else "",
+                    "category": emp_doc.category if emp_doc else "",
+                    "location_id": emp_doc.location_id if emp_doc else first_sp.location_id,
+                    "daily_rate": emp_doc.daily_rate if emp_doc else None,
+                    "present_days": 0,
+                    "half_days": 0,
+                    "payable_days": 0,
+                    "gross_pay": 0,
+                }
+            )
+
+    if employee_id:
+        payroll_rows = [r for r in payroll_rows if r["employee_id"] == employee_id]
 
     staff_rows: List[Dict[str, Any]] = []
     for r in payroll_rows:
@@ -357,12 +395,12 @@ async def compute_staff_ledger(
         remaining = max(0, due - paid)
         if due == 0 and paid == 0:
             st = "no_due"
+        elif paid > 0 and due == 0:
+            st = "advance"
         elif remaining == 0 and due > 0:
             st = "paid"
         elif paid > 0:
             st = "partial"
-        elif paid > 0 and due == 0:
-            st = "advance"
         else:
             st = "pending"
 
@@ -418,6 +456,212 @@ async def compute_staff_ledger(
             "unpaid_staff": sum(1 for x in staff_rows if x["status"] == "pending"),
         },
         "staff": staff_rows,
+    }
+
+
+async def compute_staff_statement(
+    employee: Employee,
+    start: Optional[dt.date] = None,
+    end: Optional[dt.date] = None,
+    month: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Bank-statement style ledger for one staff member over any [start, end] date range.
+
+    Combines day-by-day duty earnings (credit) and salary payout vouchers (debit) into a
+    chronological passbook with running balance, plus full voucher & duty breakdowns.
+    """
+    from app.services import payroll_service
+
+    if start and end:
+        first, last = start, end
+        days = (end - start).days + 1
+    else:
+        first, last, days = payroll_service.parse_month(month)
+    eff_month = f"{first.year:04d}-{first.month:02d}"
+
+    emp_id = str(employee.id)
+    loc_ids = [employee.location_id] if employee.location_id else None
+    await payroll_service.materialize_from_assignments(first, last, loc_ids)
+    slip = await payroll_service.build_payslip(
+        employee, first, last, days, is_custom_range=bool(start and end)
+    )
+
+    loc = await Location.get(employee.location_id) if employee.location_id and ObjectId.is_valid(employee.location_id) else None
+    location_name = loc.name if loc else "Branch"
+
+    # Strict date-window payouts sorted chronologically (oldest -> newest) for bank-statement passbook
+    all_sp = await StaffPayment.find({"employee_id": emp_id}).sort("date", "created_at").to_list()
+    period_sp: List[StaffPayment] = []
+    for sp in all_sp:
+        sp_date = sp.date.date() if isinstance(sp.date, dt.datetime) else sp.date
+        if first <= sp_date <= last:
+            period_sp.append(sp)
+
+    slip_summary = slip.get("summary", {})
+    salary_due = int(slip_summary.get("net_payable") or 0)
+    total_paid = sum(sp.amount for sp in period_sp)
+    remaining_amount = max(0, salary_due - total_paid)
+    advance_amount = max(0, total_paid - salary_due)
+
+    if salary_due == 0 and total_paid == 0:
+        st = "no_due"
+    elif total_paid > 0 and salary_due == 0:
+        st = "advance"
+    elif remaining_amount == 0 and salary_due > 0:
+        st = "paid"
+    elif total_paid > 0:
+        st = "partial"
+    else:
+        st = "pending"
+
+    # Build chronological voucher list with running paid & balance after each payment
+    payments_out: List[Dict[str, Any]] = []
+    running_paid = 0
+    for sp in period_sp:
+        running_paid += sp.amount
+        payments_out.append(
+            {
+                "id": str(sp.id),
+                "voucher_no": sp.voucher_no or f"PAY-{str(sp.id)[-5:].upper()}",
+                "amount": sp.amount,
+                "date": _iso_date(sp.date),
+                "month": sp.month or eff_month,
+                "mode": str(sp.mode),
+                "transaction_id": sp.transaction_id,
+                "paid_by": sp.paid_by,
+                "note": sp.note,
+                "running_paid": running_paid,
+                "balance_after": salary_due - running_paid,
+            }
+        )
+
+    # Filter non-unmarked attendance days for duty breakdown & passbook credit entries
+    shift_names = {
+        "morning": "Morning Shift",
+        "day": "Day Shift",
+        "night": "Night Shift",
+        "full_24h": "24 Hours",
+        "custom": "Custom Shift",
+    }
+    status_names = {
+        "present": "Present",
+        "half_day": "Half Day",
+        "off": "Off / Leave",
+        "leave": "Off / Leave",
+        "absent": "Absent",
+    }
+
+    daily_entries: List[Dict[str, Any]] = []
+    passbook_events: List[Dict[str, Any]] = []
+
+    for d in slip.get("days", []):
+        if d.get("status") == "unmarked":
+            continue
+        daily_entries.append(d)
+        amt = int(d.get("amount") or 0)
+        if amt <= 0 and d.get("status") not in ("absent", "off", "leave"):
+            continue
+        sh = shift_names.get(d.get("shift") or "", d.get("shift") or "Duty")
+        st_lbl = status_names.get(d.get("status") or "", d.get("status") or "")
+        cust = d.get("customer_name")
+        part = f"{cust} ({st_lbl})" if cust else f"Duty ({st_lbl})"
+        passbook_events.append(
+            {
+                "sort_order": 0,
+                "date": d["date"],
+                "entry_type": "earning",
+                "ref_no": sh,
+                "particulars": part,
+                "customer_name": cust,
+                "mode": None,
+                "transaction_id": None,
+                "paid_by": None,
+                "note": d.get("duration") or None,
+                "voucher_id": None,
+                "credit": amt,
+                "debit": 0,
+            }
+        )
+
+    for p in payments_out:
+        mode_lbl = str(p["mode"]).replace("_", " ").upper()
+        ref_str = f" · {p['transaction_id']}" if p.get("transaction_id") else ""
+        note_str = f" — {p['note']}" if p.get("note") else ""
+        passbook_events.append(
+            {
+                "sort_order": 1,
+                "date": p["date"] or "",
+                "entry_type": "payout",
+                "ref_no": p["voucher_no"],
+                "particulars": f"Salary Paid ({mode_lbl}{ref_str}){note_str}",
+                "customer_name": None,
+                "mode": p["mode"],
+                "transaction_id": p.get("transaction_id"),
+                "paid_by": p.get("paid_by"),
+                "note": p.get("note"),
+                "voucher_id": p["id"],
+                "credit": 0,
+                "debit": int(p["amount"]),
+            }
+        )
+
+    passbook_events.sort(key=lambda e: (e["date"], e["sort_order"]))
+    bal = 0
+    passbook: List[Dict[str, Any]] = []
+    for ev in passbook_events:
+        bal += ev["credit"] - ev["debit"]
+        passbook.append(
+            {
+                "date": ev["date"],
+                "entry_type": ev["entry_type"],
+                "ref_no": ev["ref_no"],
+                "particulars": ev["particulars"],
+                "customer_name": ev["customer_name"],
+                "mode": ev["mode"],
+                "transaction_id": ev["transaction_id"],
+                "paid_by": ev["paid_by"],
+                "note": ev["note"],
+                "voucher_id": ev["voucher_id"],
+                "credit": ev["credit"],
+                "debit": ev["debit"],
+                "running_balance": bal,
+            }
+        )
+
+    return {
+        "employee": {
+            "id": emp_id,
+            "name": employee.name,
+            "code": employee.code,
+            "category": employee.category,
+            "phone": getattr(employee, "phone", None),
+            "daily_rate": slip.get("employee", {}).get("daily_rate") or employee.daily_rate,
+            "location_id": employee.location_id,
+            "location_name": location_name,
+        },
+        "period": {
+            "month": eff_month,
+            "start": first.isoformat(),
+            "end": last.isoformat(),
+            "days": days,
+        },
+        "summary": {
+            "worked_days": slip_summary.get("worked_days", 0),
+            "present_days": slip_summary.get("present_days", 0),
+            "half_days": slip_summary.get("half_days", 0),
+            "off_days": (slip_summary.get("off_days", 0) or 0) + (slip_summary.get("leave_days", 0) or 0),
+            "absent_days": slip_summary.get("absent_days", 0),
+            "payable_days": slip_summary.get("payable_days", 0),
+            "salary_due": salary_due,
+            "paid_amount": total_paid,
+            "remaining_amount": remaining_amount,
+            "advance_amount": advance_amount,
+            "status": st,
+            "payment_count": len(payments_out),
+        },
+        "daily_entries": daily_entries,
+        "payments": payments_out,
+        "passbook": passbook,
     }
 
 

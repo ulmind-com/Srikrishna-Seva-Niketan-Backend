@@ -300,3 +300,114 @@ async def test_leave_from_assignment_deducts_and_syncs_attendance_and_payslip(
     assert slip_custom["summary"]["present_days"] == 3
     assert slip_custom["summary"]["gross_pay"] == 1500
     assert len(slip_custom["days"]) == 3
+
+
+@pytest.mark.asyncio
+async def test_staff_payment_bank_statement_date_range_and_passbook(
+    client: AsyncClient, auth_headers: dict
+):
+    loc_id, c1, _c2, _c3, e1, e2 = await _seed_data()
+
+    # e1 works Nov 1..15 @ 500/day -> 15 days = Rs 7,500
+    asg = (
+        await client.post(
+            "/api/v1/assignments",
+            json={
+                "customer_id": str(c1.id),
+                "employee_id": str(e1.id),
+                "location_id": loc_id,
+                "shift": "day",
+                "start_date": "2026-11-01",
+                "end_date": "2026-11-15",
+                "start_time": "08:00",
+                "end_time": "20:00",
+                "customer_daily_rate": 1000,
+                "employee_daily_rate": 500,
+            },
+            headers=auth_headers,
+        )
+    ).json()["data"]
+    assert asg["days_worked"] == 15.0
+
+    # Two payouts on different dates: Nov 08 (Rs 2,000) & Nov 20 (Rs 3,000)
+    await client.post(
+        "/api/v1/payments/staff",
+        json={
+            "employee_id": str(e1.id),
+            "month": "2026-11",
+            "amount": 2000,
+            "date": "2026-11-08",
+            "mode": "cash",
+            "note": "Mid-duty advance",
+        },
+        headers=auth_headers,
+    )
+    await client.post(
+        "/api/v1/payments/staff",
+        json={
+            "employee_id": str(e1.id),
+            "month": "2026-11",
+            "amount": 3000,
+            "date": "2026-11-20",
+            "mode": "upi",
+            "transaction_id": "UPI-888",
+            "note": "Second installment",
+        },
+        headers=auth_headers,
+    )
+    # Advance payout to e2 with 0 duties -> status should be "advance"
+    await client.post(
+        "/api/v1/payments/staff",
+        json={
+            "employee_id": str(e2.id),
+            "month": "2026-11",
+            "amount": 1000,
+            "date": "2026-11-10",
+            "mode": "cash",
+        },
+        headers=auth_headers,
+    )
+
+    # 1) Custom date window Nov 01..Nov 10 strictly excludes the Nov 20 payout!
+    sl_1_10 = (
+        await client.get(
+            f"/api/v1/payments/staff-ledger?start=2026-11-01&end=2026-11-10&employee_id={e1.id}",
+            headers=auth_headers,
+        )
+    ).json()["data"]
+    assert len(sl_1_10["staff"]) == 1
+    row_1_10 = sl_1_10["staff"][0]
+    assert row_1_10["payable_days"] == 10
+    assert row_1_10["salary_due"] == 5000
+    assert row_1_10["paid_amount"] == 2000
+    assert row_1_10["remaining_amount"] == 3000
+    assert row_1_10["payment_count"] == 1
+
+    # Advance status check on e2
+    sl_e2 = (
+        await client.get(
+            f"/api/v1/payments/staff-ledger?start=2026-11-01&end=2026-11-15&employee_id={e2.id}",
+            headers=auth_headers,
+        )
+    ).json()["data"]
+    assert sl_e2["staff"][0]["status"] == "advance"
+
+    # 2) Full Staff Bank-Statement endpoint for Nov 01..Nov 25 returns passbook + vouchers + running balance
+    stmt = (
+        await client.get(
+            f"/api/v1/payments/staff-statement?employee_id={e1.id}&start=2026-11-01&end=2026-11-25",
+            headers=auth_headers,
+        )
+    ).json()["data"]
+    assert stmt["summary"]["salary_due"] == 7500
+    assert stmt["summary"]["paid_amount"] == 5000
+    assert stmt["summary"]["remaining_amount"] == 2500
+    assert stmt["summary"]["status"] == "partial"
+    assert len(stmt["payments"]) == 2
+    assert stmt["payments"][0]["running_paid"] == 2000
+    assert stmt["payments"][1]["running_paid"] == 5000
+    assert stmt["payments"][1]["balance_after"] == 2500
+    # Passbook contains 15 earning rows + 2 payout rows = 17 chronological entries, ending at 2500 balance
+    assert len(stmt["passbook"]) == 17
+    assert stmt["passbook"][-1]["entry_type"] == "payout"
+    assert stmt["passbook"][-1]["running_balance"] == 2500

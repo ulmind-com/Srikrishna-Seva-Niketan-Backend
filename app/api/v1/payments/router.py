@@ -75,14 +75,38 @@ async def staff_ledger(
     start: Optional[dt.date] = Query(None),
     end: Optional[dt.date] = Query(None),
     location_id: Optional[str] = Query(None),
+    employee_id: Optional[str] = Query(None),
     actor: ActorContext = Depends(require_permission("payments", "view")),
 ) -> dict:
+    if start and end and end < start:
+        raise BadRequestException("End date cannot be before start date")
     data = await finance_service.compute_staff_ledger(
         _effective_scope(actor, location_id),
         month=month,
         start=start,
         end=end,
         location_id=location_id if (location_id and actor.can_access_location(location_id)) else None,
+        employee_id=employee_id,
+    )
+    return success_response(data=data)
+
+
+@router.get("/staff-statement", summary="Bank-statement style salary & payment statement for one staff member")
+async def staff_statement(
+    employee_id: str = Query(..., description="Staff member ID"),
+    start: Optional[dt.date] = Query(None),
+    end: Optional[dt.date] = Query(None),
+    month: Optional[str] = Query(None),
+    actor: ActorContext = Depends(require_permission("payments", "view")),
+) -> dict:
+    if start and end and end < start:
+        raise BadRequestException("End date cannot be before start date")
+    emp = await _employees.get(employee_id)
+    if emp is None:
+        raise BadRequestException("Staff member not found")
+    ensure_can_access(actor, emp.location_id)
+    data = await finance_service.compute_staff_statement(
+        emp, start=start, end=end, month=month
     )
     return success_response(data=data)
 
