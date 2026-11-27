@@ -210,6 +210,11 @@ async def find_employee_assignment_conflict(
             a.start_date, a.end_date, a.start_time, a.end_time, a.shift
         )
 
+        # Backdated Ongoing assignment (end_date=None) whose start_date is strictly before a later
+        # finite engagement should not be blocked as overlapping that later duty.
+        if end_date is None and a_e_dt is not None and target_s_dt < a_s_dt:
+            continue
+
         # Boundary touch check: if previous duty ended at exact handover time <= new start (or vice versa)
         if a_e_dt is not None and target_s_dt >= a_e_dt:
             continue

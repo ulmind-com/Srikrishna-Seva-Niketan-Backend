@@ -166,3 +166,20 @@ async def test_prevent_duplicate_overlapping_assignment_even_against_replaced_or
         headers=auth_headers,
     )
     assert ok_handover.status_code == 201, ok_handover.text
+
+    # Backdated start date 05 Oct 2026 (before 01 Nov 2026) even with End Schedule OFF (Ongoing) -> ALLOWED
+    ok_backdated = await client.post(
+        "/api/v1/assignments",
+        json={
+            "customer_id": str(cust.id),
+            "employee_id": str(emp.id),
+            "shift": "night",
+            "start_time": "19:00",
+            "end_time": "07:00",
+            "start_date": "2026-10-05",
+            "customer_daily_rate": 500,
+            "employee_daily_rate": 300,
+        },
+        headers=auth_headers,
+    )
+    assert ok_backdated.status_code == 201, ok_backdated.text
