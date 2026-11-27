@@ -42,6 +42,11 @@ from app.schemas.assignment import (
     DutyBreakCreate,
     calculate_duty_days,
 )
+from app.services.assignment_sync import (
+    find_employee_assignment_conflict,
+    format_conflict_error,
+    sync_expired_assignments,
+)
 from app.services.crud import CrudService
 from app.services.dashboard_service import invalidate_dashboard_cache
 from app.services.email_service import email_service
@@ -325,41 +330,21 @@ async def _check_employee_conflict(
     end_date: Optional[dt.date],
     start_time: Optional[str] = None,
     end_time: Optional[str] = None,
+    shift: ShiftType = ShiftType.FULL_24H,
+    customer_id: Optional[str] = None,
     exclude_assignment_id: Optional[str] = None,
-) -> Optional[Assignment]:
-    """Check if the employee already has an active/scheduled assignment during the given dates."""
-    query: dict = {
-        "employee_id": employee_id,
-        "status": {"$in": [AssignmentStatus.SCHEDULED.value, AssignmentStatus.ACTIVE.value]},
-    }
-    if exclude_assignment_id:
-        from bson import ObjectId
-        from bson.errors import InvalidId
-        try:
-            query["_id"] = {"$ne": ObjectId(exclude_assignment_id)}
-        except (InvalidId, TypeError):
-            pass
-
-    existing_list = await Assignment.find(query).to_list()
-    target_end = end_date or dt.date.max
-
-    for a in existing_list:
-        a_end = a.end_date or dt.date.max
-        # No overlap if one ends before the other starts
-        if start_date > a_end or a.start_date > target_end:
-            continue
-
-        # Check boundary edge cases if on the exact same date
-        if start_date == a_end and a_end != dt.date.max:
-            if start_time and a.end_time and a.end_time <= start_time:
-                continue
-        if target_end == a.start_date and target_end != dt.date.max:
-            if end_time and a.start_time and end_time <= a.start_time:
-                continue
-
-        return a
-
-    return None
+) -> Optional[tuple[Assignment, str]]:
+    """Delegate to IST-aware non-cancelled overlap detector."""
+    return await find_employee_assignment_conflict(
+        employee_id=employee_id,
+        start_date=start_date,
+        end_date=end_date,
+        start_time=start_time,
+        end_time=end_time,
+        shift=shift,
+        customer_id=customer_id,
+        exclude_assignment_id=exclude_assignment_id,
+    )
 
 
 @router.get("", summary="List assignments")
@@ -374,6 +359,7 @@ async def list_assignments(
     ),
     actor: ActorContext = Depends(require_permission("assignments", "view")),
 ) -> dict:
+    await sync_expired_assignments([employee_id] if employee_id else None)
     filters: dict = actor.scope_filter()
     if status is not None:
         filters["status"] = status
@@ -466,6 +452,7 @@ async def deployment_overview(
     so the same screen answers "how many of my staff are out, how many are left,
     and how many days until each one is back".
     """
+    await sync_expired_assignments()
     today = dt.datetime.combine(today_ist(), dt.time.min)
 
     locations = await Location.find({"is_active": True}).sort("order").to_list()
@@ -625,19 +612,19 @@ async def create_assignment(
         except Exception:
             pass
 
-    # Check for overlapping assignments (prevent double-booking staff)
-    conflict = await _check_employee_conflict(
+    # Check for overlapping assignments (prevent duplicate / overlapping dates even against past duties)
+    conflict_res = await _check_employee_conflict(
         payload.employee_id,
         payload.start_date,
         data.get("end_date"),
         data.get("start_time"),
         data.get("end_time"),
+        shift=data.get("shift") or payload.shift,
+        customer_id=payload.customer_id,
     )
-    if conflict:
-        c_end = conflict.end_date.isoformat() if conflict.end_date else "Ongoing"
-        raise BadRequestException(
-            f"{employee.name} is already assigned/on-duty for {conflict.customer_name} from {conflict.start_date.isoformat()} to {c_end}."
-        )
+    if conflict_res:
+        conflict, kind = conflict_res
+        raise BadRequestException(format_conflict_error(employee.name, conflict, kind))
 
     doc = await _assignments.create(data, actor)
 
@@ -727,21 +714,29 @@ async def update_assignment(
         coords = await geo_service.geocode(data["address"] or "")
         if coords is not None:
             data["dest_lat"], data["dest_lng"] = coords
-    # Validate conflict if employee or dates changed and assignment is active/scheduled
+    # Validate conflict if employee, dates, or shift times changed on non-cancelled assignment
     target_emp_id = data.get("employee_id") or existing.employee_id
-    if current_status in _OCCUPYING and ("employee_id" in data or "start_date" in data or "end_date" in data):
-        conflict = await _check_employee_conflict(
+    if current_status != AssignmentStatus.CANCELLED and (
+        "employee_id" in data
+        or "start_date" in data
+        or "end_date" in data
+        or "start_time" in data
+        or "end_time" in data
+    ):
+        conflict_res = await _check_employee_conflict(
             target_emp_id,
             start_d,
             data.get("end_date") if "end_date" in data else existing.end_date,
             data.get("start_time") or existing.start_time,
             data.get("end_time") or existing.end_time,
+            shift=data.get("shift") or existing.shift,
+            customer_id=existing.customer_id,
             exclude_assignment_id=assignment_id,
         )
-        if conflict:
-            c_end = conflict.end_date.isoformat() if conflict.end_date else "Ongoing"
+        if conflict_res:
+            conflict, kind = conflict_res
             raise BadRequestException(
-                f"Staff member is already assigned/on-duty for {conflict.customer_name} from {conflict.start_date.isoformat()} to {c_end}."
+                format_conflict_error(existing.employee_name or "Staff member", conflict, kind)
             )
 
     doc = await _assignments.update(assignment_id, data, actor)
@@ -1096,19 +1091,19 @@ async def _perform_staff_replacement(
     _derive_amounts(new_data, payload.effective_date, target_end_date)
 
     # Check conflict for the replacement staff member
-    conflict = await _check_employee_conflict(
+    conflict_res = await _check_employee_conflict(
         str(new_emp.id),
         payload.effective_date,
         target_end_date,
         target_start_time,
         target_end_time,
+        shift=target_shift,
+        customer_id=existing.customer_id,
         exclude_assignment_id=assignment_id,
     )
-    if conflict:
-        c_end = conflict.end_date.isoformat() if conflict.end_date else "Ongoing"
-        raise BadRequestException(
-            f"Replacement staff {new_emp.name} is already assigned to {conflict.customer_name} from {conflict.start_date.isoformat()} to {c_end}."
-        )
+    if conflict_res:
+        conflict, kind = conflict_res
+        raise BadRequestException(format_conflict_error(new_emp.name, conflict, kind))
 
     new_assignment = await _assignments.create(new_data, actor)
     await _set_employee_status(str(new_emp.id), EmployeeStatus.ASSIGNED)
@@ -1250,18 +1245,18 @@ async def multi_staff_assign(
         cdr = staff.customer_daily_rate if staff.customer_daily_rate is not None else payload.customer_daily_rate
         edr = staff.employee_daily_rate if staff.employee_daily_rate is not None else (payload.employee_daily_rate or emp.daily_rate)
 
-        conflict = await _check_employee_conflict(
+        conflict_res = await _check_employee_conflict(
             str(emp.id),
             payload.start_date,
             calculated_end_date,
             staff.start_time,
             staff.end_time,
+            shift=staff.shift,
+            customer_id=str(customer.id),
         )
-        if conflict:
-            c_end = conflict.end_date.isoformat() if conflict.end_date else "Ongoing"
-            raise BadRequestException(
-                f"{emp.name} is already assigned/on-duty for {conflict.customer_name} from {conflict.start_date.isoformat()} to {c_end}."
-            )
+        if conflict_res:
+            conflict, kind = conflict_res
+            raise BadRequestException(format_conflict_error(emp.name, conflict, kind))
 
         asg_data = {
             "customer_id": str(customer.id),

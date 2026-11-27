@@ -189,10 +189,10 @@ async def test_all_shift_types_duty_days_edit_and_replacement_totals(
     assert r_day_edit.json()["data"]["customer_rate"] == 15000
     assert r_day_edit.json()["data"]["employee_payout"] == 9000
 
-    # Complete / cancel Day assignment so emp1 is free for Night shift test
+    # Cancel dummy Day assignment so emp1 is free to test Night shift on same dates
     await client.put(
         f"/api/v1/assignments/{day_data['id']}",
-        json={"status": "completed"},
+        json={"status": "cancelled"},
         headers=auth_headers,
     )
 
@@ -254,7 +254,8 @@ async def test_all_shift_types_duty_days_edit_and_replacement_totals(
     assert orig_night_after["days_worked"] == 6.0
     assert orig_night_after["customer_rate"] == 9000
 
-    await client.put(f"/api/v1/assignments/{rep_night_id}", json={"status": "completed"}, headers=auth_headers)
+    await client.put(f"/api/v1/assignments/{night_data['id']}", json={"status": "cancelled"}, headers=auth_headers)
+    await client.put(f"/api/v1/assignments/{rep_night_id}", json={"status": "cancelled"}, headers=auth_headers)
 
     # Morning shift: Nov 1 -> Nov 5 (07:00 -> 15:00) = 5 days
     r_morn = await client.post(
@@ -276,7 +277,7 @@ async def test_all_shift_types_duty_days_edit_and_replacement_totals(
     assert r_morn.status_code == 201, r_morn.text
     assert r_morn.json()["data"]["days_worked"] == 5.0
     assert r_morn.json()["data"]["customer_rate"] == 4000
-    await client.put(f"/api/v1/assignments/{r_morn.json()['data']['id']}", json={"status": "completed"}, headers=auth_headers)
+    await client.put(f"/api/v1/assignments/{r_morn.json()['data']['id']}", json={"status": "cancelled"}, headers=auth_headers)
 
     # Custom shift: single day 09:00 -> 17:00 = 1.0 day (not 0.5!), and 2-window overnight+day Nov 7->Nov 8 = 2.0 days
     r_cust_1d = await client.post(

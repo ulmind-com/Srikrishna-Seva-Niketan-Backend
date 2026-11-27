@@ -57,6 +57,8 @@ async def list_employees(
     is_active: Optional[bool] = Query(None),
     actor: ActorContext = Depends(require_permission("employees", "view")),
 ) -> dict:
+    from app.services.assignment_sync import sync_expired_assignments
+    await sync_expired_assignments()
     filters: dict = actor.scope_filter()
     if category is not None:
         filters["category"] = category
