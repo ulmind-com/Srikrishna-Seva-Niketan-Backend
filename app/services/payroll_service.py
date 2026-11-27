@@ -519,12 +519,13 @@ async def build_payslip(
 
     from app.models.finance import StaffPayment
     eff_month = f"{first.year:04d}-{first.month:02d}"
+    same_month_range = first.year == last.year and first.month == last.month
     sp_docs = await StaffPayment.find({"employee_id": emp_id}).to_list()
     paid_amount = sum(
         sp.amount
         for sp in sp_docs
         if (
-            (first <= sp.date <= last)
+            (first <= sp.date <= last) or (same_month_range and sp.month == eff_month)
             if is_custom_range or not sp.month
             else (sp.month == eff_month)
         )
@@ -587,6 +588,7 @@ async def payroll_run(
     from app.models.finance import StaffPayment
 
     eff_month = f"{first.year:04d}-{first.month:02d}"
+    same_month_range = first.year == last.year and first.month == last.month
     sp_filter: dict = {}
     if location_ids is not None:
         sp_filter["location_id"] = {"$in": location_ids}
@@ -594,7 +596,7 @@ async def payroll_run(
     sp_by_emp: Dict[str, int] = {}
     for sp in all_sp:
         matches = (
-            (first <= sp.date <= last)
+            ((first <= sp.date <= last) or (same_month_range and sp.month == eff_month))
             if is_custom_range or not sp.month
             else (sp.month == eff_month)
         )
