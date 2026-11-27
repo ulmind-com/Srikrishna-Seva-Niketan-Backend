@@ -107,14 +107,25 @@ def _apply_duration(data: dict, start: Optional[dt.date]) -> dict:
 
 
 def _sync_shift_times(data: dict) -> dict:
-    """Mirror the first custom shift window into start_time/end_time (compat)."""
+    """Mirror custom shift windows into start_time/end_time and date bounds when dated."""
     windows = data.get("shift_windows")
     if windows:
         first = windows[0]
+        last = windows[-1]
         start = first.get("start") if isinstance(first, dict) else getattr(first, "start", None)
-        end = first.get("end") if isinstance(first, dict) else getattr(first, "end", None)
+        end = last.get("end") if isinstance(last, dict) else getattr(last, "end", None)
         data["start_time"] = start
         data["end_time"] = end
+        dates = []
+        for w in windows:
+            raw_d = w.get("date") if isinstance(w, dict) else getattr(w, "date", None)
+            if raw_d:
+                parsed_d = raw_d if isinstance(raw_d, dt.date) else _parse_flexible_date(raw_d)
+                if parsed_d:
+                    dates.append(parsed_d)
+        if dates:
+            data["start_date"] = min(dates)
+            data["end_date"] = max(dates)
     return data
 
 
@@ -1046,7 +1057,7 @@ async def _perform_staff_replacement(
     target_end_date = payload.end_date if "end_date" in payload.model_fields_set else orig_end_date
     target_windows = None
     if payload.shift_windows is not None:
-        target_windows = [w.model_dump() for w in payload.shift_windows if w.start or w.end]
+        target_windows = [w.model_dump() for w in payload.shift_windows if w.date or w.start or w.end]
         if target_windows:
             target_shift = ShiftType.CUSTOM
             target_start_time = target_windows[0].get("start") or target_start_time

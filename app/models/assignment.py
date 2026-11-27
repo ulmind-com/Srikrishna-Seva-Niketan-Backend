@@ -8,16 +8,26 @@ from typing import List, Optional
 
 import pymongo
 from beanie import Indexed
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.models.base import TimestampedDocument
+from app.utils.ist_time import parse_flexible_date
 
 
 class ShiftWindow(BaseModel):
-    """One worked time window, "HH:MM" 24-hour (overnight allowed)."""
+    """One worked time window, optional date + "HH:MM" 24-hour (overnight allowed)."""
 
+    date: Optional[dt.date] = None
     start: Optional[str] = None
     end: Optional[str] = None
+
+    @field_validator("date", mode="before")
+    @classmethod
+    def _parse_win_date(cls, v):
+        if v == "" or v is None:
+            return None
+        parsed = parse_flexible_date(v)
+        return parsed if parsed is not None else v
 
 
 class DutyBreak(BaseModel):

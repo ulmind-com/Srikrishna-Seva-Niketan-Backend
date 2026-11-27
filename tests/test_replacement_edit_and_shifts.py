@@ -861,3 +861,47 @@ async def test_complex_half_day_breaks_and_replacement_chain_sync(
     assert fin["summary"]["total_staff_payout"] == 17625
     assert fin["summary"]["total_expenses"] == 1300
 
+
+@pytest.mark.asyncio
+async def test_dated_custom_shift_windows_repeater(
+    client: AsyncClient, auth_headers: dict
+):
+    loc_id, cust_id, emp1_id, _emp2_id = await _seed_branch_and_people()
+
+    # Custom shift with multiple per-date entries (same-day split on Nov 10 + Nov 11 + Nov 13 = 3 calendar days)
+    res = await client.post(
+        "/api/v1/assignments",
+        json={
+            "customer_id": cust_id,
+            "employee_id": emp1_id,
+            "location_id": loc_id,
+            "shift": "custom",
+            "start_date": "2026-11-10",
+            "shift_windows": [
+                {"date": "2026-11-10", "start": "07:00", "end": "12:00"},
+                {"date": "2026-11-10", "start": "16:00", "end": "20:00"},
+                {"date": "2026-11-11", "start": "09:00", "end": "14:00"},
+                {"date": "2026-11-13", "start": "10:00", "end": "18:00"},
+            ],
+            "customer_daily_rate": 1000,
+            "employee_daily_rate": 600,
+        },
+        headers=auth_headers,
+    )
+    assert res.status_code == 201, res.text
+    asg = res.json()["data"]
+    assert asg["start_date"] == "2026-11-10"
+    assert asg["end_date"] == "2026-11-13"
+    assert asg["days_worked"] == 3.0
+    assert asg["customer_rate"] == 3000
+    assert asg["employee_payout"] == 1800
+
+    slip = (
+        await client.get(
+            f"/api/v1/payroll/payslip?employee_id={emp1_id}&start_date=2026-11-10&end_date=2026-11-13",
+            headers=auth_headers,
+        )
+    ).json()["data"]
+    assert slip["summary"]["present_days"] == 3
+    assert slip["summary"]["gross_pay"] == 1800
+

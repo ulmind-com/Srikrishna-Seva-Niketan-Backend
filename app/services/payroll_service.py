@@ -506,7 +506,7 @@ async def build_payslip(
                     "end_time": rec.end_time,
                     "duration": duration_str,
                     "shift_windows": (
-                        [w.model_dump() for w in rec.shift_windows] if rec.shift_windows else None
+                        [w.model_dump(mode="json") for w in rec.shift_windows] if rec.shift_windows else None
                     ),
                     "customer_name": rec.customer_name,
                     "pay_rate": rate,

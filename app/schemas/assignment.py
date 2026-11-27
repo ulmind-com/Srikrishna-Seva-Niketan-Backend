@@ -163,10 +163,17 @@ def _format_shift(shift, start_time: Optional[str], end_time: Optional[str], win
     if s == "custom":
         parts = []
         for w in windows or []:
+            w_date = getattr(w, "date", None) if not isinstance(w, dict) else w.get("date")
             start = getattr(w, "start", None) if not isinstance(w, dict) else w.get("start")
             end = getattr(w, "end", None) if not isinstance(w, dict) else w.get("end")
             if start or end:
-                parts.append(f"{_fmt_time(start) or '?'} - {_fmt_time(end) or '?'}")
+                t_str = f"{_fmt_time(start) or '?'} - {_fmt_time(end) or '?'}"
+                if w_date:
+                    d_parsed = _ist_parse_flexible_date(w_date)
+                    d_str = d_parsed.strftime("%d/%m") if d_parsed else str(w_date)
+                    parts.append(f"{d_str} {t_str}")
+                else:
+                    parts.append(t_str)
         if not parts and (start_time or end_time):
             parts.append(f"{_fmt_time(start_time) or '?'} - {_fmt_time(end_time) or '?'}")
         if parts:
