@@ -249,7 +249,7 @@ def _build_worked_slots_ist(
                 break
         return slots
 
-    # 2. Explicit per-date Custom Shift entries (each row carries date + start + end)
+    # 2. Explicit per-date Custom Shift entries when multiple dates OR single matching date are given
     if shift == ShiftType.CUSTOM and shift_windows:
         win_dicts_all = [_window_to_dict(w) for w in shift_windows]
         dated_pairs: List[Tuple[dt.date, dict]] = []
@@ -257,33 +257,37 @@ def _build_worked_slots_ist(
             d_val = parse_flexible_date(wd.get("date"))
             if d_val is not None:
                 dated_pairs.append((d_val, wd))
-        if dated_pairs:
+        unique_win_dates = {d_val for d_val, _ in dated_pairs}
+        # Use explicit per-date slots when either multiple custom dates exist OR the assignment itself
+        # spans just that single matching date; otherwise apply the custom window(s) across [start_date, end_date].
+        if dated_pairs and (len(unique_win_dates) > 1 or (start_date == end_date and start_date in unique_win_dates)):
             by_day: dict[dt.date, List[dict]] = {}
             for d_val, wd in dated_pairs:
                 if d_val < start_date or d_val > end_date:
                     continue
                 by_day.setdefault(d_val, []).append(wd)
-            slots = []
-            for d_val in sorted(by_day.keys()):
-                day_wins = by_day[d_val]
-                first_w = day_wins[0]
-                last_w = day_wins[-1]
-                w_st = parse_hhmm(first_w.get("start")) or st_parsed or parse_hhmm(def_st) or dt.time(8, 0)
-                w_et = parse_hhmm(last_w.get("end")) or et_parsed or parse_hhmm(def_et) or dt.time(20, 0)
-                s_dt = ist_dt(d_val, w_st)
-                e_dt = ist_dt(d_val + dt.timedelta(days=1) if w_et <= w_st else d_val, w_et)
-                slots.append(
-                    {
-                        "date": d_val,
-                        "slot_start": s_dt,
-                        "slot_end": e_dt,
-                        "start_time": fmt_hhmm(w_st),
-                        "end_time": fmt_hhmm(w_et),
-                        "shift_windows": day_wins,
-                        "unit_weight": 1.0,
-                    }
-                )
-            return slots
+            if by_day:
+                slots = []
+                for d_val in sorted(by_day.keys()):
+                    day_wins = by_day[d_val]
+                    first_w = day_wins[0]
+                    last_w = day_wins[-1]
+                    w_st = parse_hhmm(first_w.get("start")) or st_parsed or parse_hhmm(def_st) or dt.time(8, 0)
+                    w_et = parse_hhmm(last_w.get("end")) or et_parsed or parse_hhmm(def_et) or dt.time(20, 0)
+                    s_dt = ist_dt(d_val, w_st)
+                    e_dt = ist_dt(d_val + dt.timedelta(days=1) if w_et <= w_st else d_val, w_et)
+                    slots.append(
+                        {
+                            "date": d_val,
+                            "slot_start": s_dt,
+                            "slot_end": e_dt,
+                            "start_time": fmt_hhmm(w_st),
+                            "end_time": fmt_hhmm(w_et),
+                            "shift_windows": day_wins,
+                            "unit_weight": 1.0,
+                        }
+                    )
+                return slots
 
     # 3. Daily recurring / custom shifts
     cal_diff = (end_date - start_date).days

@@ -107,7 +107,7 @@ def _apply_duration(data: dict, start: Optional[dt.date]) -> dict:
 
 
 def _sync_shift_times(data: dict) -> dict:
-    """Mirror custom shift windows into start_time/end_time and date bounds when dated."""
+    """Mirror custom shift windows into start_time/end_time cleanly."""
     windows = data.get("shift_windows")
     if windows:
         first = windows[0]
@@ -116,16 +116,18 @@ def _sync_shift_times(data: dict) -> dict:
         end = last.get("end") if isinstance(last, dict) else getattr(last, "end", None)
         data["start_time"] = start
         data["end_time"] = end
-        dates = []
-        for w in windows:
-            raw_d = w.get("date") if isinstance(w, dict) else getattr(w, "date", None)
-            if raw_d:
-                parsed_d = raw_d if isinstance(raw_d, dt.date) else _parse_flexible_date(raw_d)
-                if parsed_d:
-                    dates.append(parsed_d)
-        if dates:
-            data["start_date"] = min(dates)
-            data["end_date"] = max(dates)
+        # Only infer start_date/end_date from windows when end_date was not explicitly supplied
+        if not data.get("end_date"):
+            dates = []
+            for w in windows:
+                raw_d = w.get("date") if isinstance(w, dict) else getattr(w, "date", None)
+                if raw_d:
+                    parsed_d = raw_d if isinstance(raw_d, dt.date) else _parse_flexible_date(raw_d)
+                    if parsed_d:
+                        dates.append(parsed_d)
+            if dates and (len(set(dates)) > 1 or data.get("start_date") == min(dates)):
+                data["start_date"] = min(dates)
+                data["end_date"] = max(dates)
     return data
 
 
