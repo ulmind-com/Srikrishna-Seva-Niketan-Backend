@@ -327,6 +327,8 @@ async def monthly_bills(
         "bills": len(bills),
         "total_days": round(sum(b["total_days"] for b in bills), 2),
         "total_amount": sum(b["total_amount"] for b in bills),
+        "total_paid": sum(b.get("paid_amount", 0) for b in bills),
+        "total_outstanding": sum(b.get("outstanding_amount", b["total_amount"]) for b in bills),
     }
     return success_response(
         data={
